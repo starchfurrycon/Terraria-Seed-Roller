@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{90E573F3-3C19-43BD-AC67-792E2ED2183B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TerrariaSeedRoller.Core", "src\TerrariaSeedRoller.Core\TerrariaSeedRoller.Core.csproj", "{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TerrariaSeedRoller.Cli", "src\TerrariaSeedRoller.Cli\TerrariaSeedRoller.Cli.csproj", "{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TerrariaSeedRoller.App", "src\TerrariaSeedRoller.App\TerrariaSeedRoller.App.csproj", "{83CD9F45-3F66-4FBA-8E75-DF70CA455904}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0A544A9B-FBBF-4E17-A5C8-72313A46A783}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TerrariaSeedRoller.Tests", "tests\TerrariaSeedRoller.Tests\TerrariaSeedRoller.Tests.csproj", "{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{83CD9F45-3F66-4FBA-8E75-DF70CA455904}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{83CD9F45-3F66-4FBA-8E75-DF70CA455904}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{83CD9F45-3F66-4FBA-8E75-DF70CA455904}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{83CD9F45-3F66-4FBA-8E75-DF70CA455904}.Release|Any CPU.Build.0 = Release|Any CPU
+		{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{2D668C7D-6E8C-4BDD-9438-CFDFF905AF4B} = {90E573F3-3C19-43BD-AC67-792E2ED2183B}
+		{FFD5477C-BFCA-4D79-A9E9-AFF3E9BCDCC0} = {90E573F3-3C19-43BD-AC67-792E2ED2183B}
+		{83CD9F45-3F66-4FBA-8E75-DF70CA455904} = {90E573F3-3C19-43BD-AC67-792E2ED2183B}
+		{32C57AFA-D2C7-4E7D-9894-AD9D92BE471F} = {0A544A9B-FBBF-4E17-A5C8-72313A46A783}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible generation, parser, metric, or UI problem.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never upload player files publicly if they contain information you consider private. Keep an original backup.
+  - type: input
+    id: version
+    attributes:
+      label: Seed Roller version
+    validations:
+      required: true
+  - type: input
+    id: terraria
+    attributes:
+      label: Terraria version and world format
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant failure log

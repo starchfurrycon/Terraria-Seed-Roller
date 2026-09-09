@@ -1,0 +1,14 @@
+bin/
+obj/
+artifacts/
+.vs/
+.idea/
+*.user
+*.suo
+*.wld
+*.wld.bak*
+*.plr
+*.map
+_research/
+tools/
+

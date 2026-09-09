@@ -18,6 +18,7 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _attempts = Number(1, 10_000_000, 20);
     private readonly NumericUpDown _winners = Number(1, 10_000, 3);
     private readonly NumericUpDown _parallel = Number(1, 8, 1);
+    private readonly ComboBox _serverPriority = DropDown();
     private readonly NumericUpDown _timeout = Number(1, 120, 10);
     private readonly CheckBox _random = new() { Text = "随机无重复顺序", Checked = true, AutoSize = true };
     private readonly CheckBox _keepRejected = new() { Text = "保留未通过世界", AutoSize = true };
@@ -53,6 +54,13 @@ public sealed class MainForm : Form
         _size.DataSource = new[] { new Choice<WorldSize>("小世界", WorldSize.Small), new("中世界", WorldSize.Medium), new("大世界", WorldSize.Large) };
         _difficulty.DataSource = new[] { new Choice<WorldDifficulty>("经典", WorldDifficulty.Classic), new("专家", WorldDifficulty.Expert), new("大师", WorldDifficulty.Master), new("旅途", WorldDifficulty.Journey) };
         _evil.DataSource = new[] { new Choice<WorldEvil>("随机", WorldEvil.Random), new("腐化", WorldEvil.Corruption), new("猩红", WorldEvil.Crimson) };
+        _serverPriority.DataSource = new[]
+        {
+            new Choice<ServerProcessPriority>("均衡（推荐）", ServerProcessPriority.Balanced),
+            new("最快", ServerProcessPriority.Fastest),
+            new("低影响", ServerProcessPriority.LowImpact),
+            new("空闲时运行", ServerProcessPriority.Idle)
+        };
         foreach (SpecialSeedFlags value in Enum.GetValues<SpecialSeedFlags>().Where(v => v != SpecialSeedFlags.None))
             _specialSeeds.Items.Add(value);
         _preset.DataSource = BuiltInProfiles.All.ToList();
@@ -130,13 +138,14 @@ public sealed class MainForm : Form
         AddRow(table, "最多尝试", _attempts);
         AddRow(table, "保留前 N", _winners);
         AddRow(table, "并发数", _parallel);
+        AddRow(table, "资源策略", _serverPriority);
         AddRow(table, "单世界超时", Inline(_timeout, new Label { Text = "分钟", AutoSize = true, Padding = new Padding(6, 6, 0, 0) }));
         AddRow(table, "临时文件", _keepRejected);
         AddRow(table, "筛选预设", _preset);
 
         Label note = new()
         {
-            Text = "使用已安装的原版 TerrariaServer 后台真实生成。不会打开游戏窗口、不会读取或写入玩家存档目录；默认只保留最终入选世界。并发 1 最稳妥。",
+            Text = "使用已安装的原版 TerrariaServer 后台真实生成。不会打开游戏窗口、不会读取或写入玩家存档目录；默认只保留最终入选世界。并发 1 配合均衡资源策略最稳妥。",
             AutoSize = true,
             MaximumSize = new Size(410, 0),
             ForeColor = Color.LightSteelBlue,
@@ -189,6 +198,8 @@ public sealed class MainForm : Form
         _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "邪恶宽度", DataPropertyName = "EvilWidth", FillWeight = 60 });
         _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "肉前蔓延宽度", DataPropertyName = "SpreadWidth", FillWeight = 70 });
         _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "宝箱", DataPropertyName = "Chests", FillWeight = 45 });
+        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "生成秒", DataPropertyName = "GenerationSeconds", FillWeight = 45, DefaultCellStyle = new DataGridViewCellStyle { Format = "0.00" } });
+        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "分析秒", DataPropertyName = "AnalysisSeconds", FillWeight = 45, DefaultCellStyle = new DataGridViewCellStyle { Format = "0.00" } });
         _results.DataSource = _resultSource;
     }
 
@@ -289,6 +300,7 @@ public sealed class MainForm : Form
             WinnersToKeep = decimal.ToInt32(_winners.Value),
             TopResultsToTrack = Math.Max(decimal.ToInt32(_winners.Value), 50),
             Parallelism = decimal.ToInt32(_parallel.Value),
+            ServerPriority = ((Choice<ServerProcessPriority>)_serverPriority.SelectedItem!).Value,
             PerWorldTimeout = TimeSpan.FromMinutes(decimal.ToDouble(_timeout.Value)),
             KeepRejectedWorlds = _keepRejected.Checked
         };
@@ -349,6 +361,8 @@ public sealed class MainForm : Form
             EvilWidth = Get(r, MetricKeys.EvilLargestWidthTiles),
             SpreadWidth = Get(r, MetricKeys.EvilPreHardmodeClosureLargestWidth),
             Chests = Get(r, MetricKeys.ChestCount),
+            GenerationSeconds = r.GenerationDuration.TotalSeconds,
+            AnalysisSeconds = r.AnalysisDuration.TotalSeconds,
             Result = r
         }).ToList();
         _resultSource.ResetBindings(false);
@@ -363,11 +377,13 @@ public sealed class MainForm : Form
         _details.Text = $"世界：{result.Analysis.Metadata.Title}\n复制种子：{result.CopiedSeed}\n" +
             $"尺寸：{result.Analysis.Metadata.Width} × {result.Analysis.Metadata.Height}\n" +
             $"得分：{result.Analysis.Evaluation?.Score:0.##}\n" +
+            $"耗时：生成 {result.GenerationDuration.TotalSeconds:0.00} 秒，分析 {result.AnalysisDuration.TotalSeconds:0.00} 秒\n" +
             $"邪恶实际最大宽度：{Get(result, MetricKeys.EvilLargestWidthTiles):0} 格\n" +
             $"肉前自由蔓延最大宽度：{Get(result, MetricKeys.EvilPreHardmodeClosureLargestWidth):0} 格\n" +
             $"邪恶—丛林间距：{Get(result, MetricKeys.EvilJungleGapTiles):0} 格\n" +
             $"宝箱：{result.Analysis.Chests.Count}\n生命水晶：{Get(result, MetricKeys.LifeCrystalCount):0}\n" +
-            $"微光液体格：{Get(result, MetricKeys.ShimmerLiquidTiles):0}\n\n" +
+            $"微光液体格：{Get(result, MetricKeys.ShimmerLiquidTiles):0}\n" +
+            $"微光路线成本：{Get(result, MetricKeys.ShimmerAccessCost):0}\n\n" +
             "白点为出生点。地图每像素代表 8×8 格，只显示分析目标，不会解锁游戏地图。";
     }
 
@@ -469,6 +485,8 @@ public sealed class MainForm : Form
         public double EvilWidth { get; init; }
         public double SpreadWidth { get; init; }
         public double Chests { get; init; }
+        public double GenerationSeconds { get; init; }
+        public double AnalysisSeconds { get; init; }
         public required RollResult Result { get; init; }
     }
 }

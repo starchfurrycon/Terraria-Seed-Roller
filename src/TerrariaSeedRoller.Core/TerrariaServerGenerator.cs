@@ -84,7 +84,7 @@ public sealed class TerrariaServerGenerator
             await ready.Task.WaitAsync(linked.Token).ConfigureAwait(false);
             if (!File.Exists(worldPath))
                 throw new InvalidDataException("TerrariaServer reported startup but the generated world file is missing.");
-            await WaitForStableFileAsync(worldPath, linked.Token).ConfigureAwait(false);
+            await WaitForCompleteWorldFileAsync(worldPath, linked.Token).ConfigureAwait(false);
 
             // TerrariaServer on Windows forces Console.InputEncoding to UTF-16LE.
             // Writing raw bytes avoids StandardInput's platform-dependent encoding.
@@ -174,24 +174,61 @@ public sealed class TerrariaServerGenerator
             "language=en-US",
             "upnp=0",
             "secure=0",
-            "priority=1",
+            $"priority={(int)settings.ServerPriority}",
             string.Empty
         ]);
     }
 
-    private static async Task WaitForStableFileAsync(string path, CancellationToken token)
+    private static async Task WaitForCompleteWorldFileAsync(string path, CancellationToken token)
     {
-        long previous = -1;
-        int stableChecks = 0;
-        while (stableChecks < 3)
+        // "Server started" is emitted after vanilla closes its initial world
+        // save. Validate the section table and exact footer instead of waiting
+        // four fixed 350 ms polling intervals on every candidate.
+        for (int attempt = 0; attempt < 100; attempt++)
         {
             token.ThrowIfCancellationRequested();
-            long current = new FileInfo(path).Length;
-            if (current > 1024 && current == previous) stableChecks++;
-            else stableChecks = 0;
-            previous = current;
-            await Task.Delay(350, token).ConfigureAwait(false);
+            try
+            {
+                if (HasCompleteWorldFooter(path)) return;
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            await Task.Delay(50, token).ConfigureAwait(false);
         }
+        throw new InvalidDataException("TerrariaServer produced a world file without a complete footer.");
+    }
+
+    private static bool HasCompleteWorldFooter(string path)
+    {
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan);
+        if (stream.Length < 64) return false;
+        using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
+        uint version = reader.ReadUInt32();
+        if (version is < 269 or > 326) return false;
+        string signature = Encoding.ASCII.GetString(reader.ReadBytes(7));
+        byte fileType = reader.ReadByte();
+        if ((signature != "relogic" && signature != "xindong") || fileType != 2) return false;
+        _ = reader.ReadUInt32();
+        _ = reader.ReadUInt64();
+        short sectionCount = reader.ReadInt16();
+        if (sectionCount is < 4 or > 32) return false;
+
+        int previous = 0;
+        int footer = 0;
+        for (int index = 0; index < sectionCount; index++)
+        {
+            int section = reader.ReadInt32();
+            if (section <= previous || section >= stream.Length) return false;
+            previous = section;
+            footer = section;
+        }
+
+        stream.Position = footer;
+        if (!reader.ReadBoolean()) return false;
+        string title = reader.ReadString();
+        _ = reader.ReadInt32();
+        return title.Length > 0 && stream.Position == stream.Length;
     }
 
     private static void EnsureDiskSpace(string directory, double minimumFreeGb)
@@ -234,7 +271,9 @@ public sealed class TerrariaServerGenerator
         string number = line[(start + 1)..percent];
         if (!double.TryParse(number, System.Globalization.NumberStyles.Float,
             System.Globalization.CultureInfo.InvariantCulture, out double value)) return false;
-        bucket = (int)Math.Floor(value);
+        // Ten-percent buckets keep CLI and RichTextBox output useful without
+        // dispatching hundreds of UI/log updates per generated world.
+        bucket = (int)Math.Floor(value / 10d) * 10;
         int separator = line.IndexOf(" - ", percent, StringComparison.Ordinal);
         if (separator >= 0)
         {

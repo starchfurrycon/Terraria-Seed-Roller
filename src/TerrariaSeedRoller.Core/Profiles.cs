@@ -48,11 +48,18 @@ public static class MetricCatalog
             D(MetricKeys.SpawnFlatness, "出生点平整度", "Spawn flatness", "分", true, "出生点", "出生点附近地面高度标准差换算的 0–100 分。"),
             D(MetricKeys.SpawnNearestChestTiles, "最近宝箱距离", "Nearest chest", "格", false, "出生点", "出生点到最近宝箱的直线距离。"),
             D(MetricKeys.SpawnNearestLifeCrystalTiles, "最近生命水晶距离", "Nearest life crystal", "格", false, "出生点", "出生点到最近生命水晶的直线距离。"),
+            D(MetricKeys.SpawnNearestLifeCrystalAccessCost, "生命水晶获取成本", "Life crystal access cost", "估算分", false, "出生点", "沿最低成本实际路线抵达任意生命水晶的估算成本。"),
             D(MetricKeys.DungeonDistanceTiles, "地牢距离", "Dungeon distance", "格", false, "行程", "出生点到地牢入口坐标的距离。"),
+            D(MetricKeys.DungeonAccessCost, "地牢路线成本", "Dungeon route cost", "估算分", false, "行程", "沿最低成本路线抵达世界 Header 中地牢入口坐标的成本。"),
             D(MetricKeys.JungleDistanceTiles, "丛林距离", "Jungle distance", "格", false, "行程", "出生点到最近丛林区域的距离。"),
+            D(MetricKeys.JungleAccessCost, "丛林路线成本", "Jungle route cost", "估算分", false, "行程", "沿最低成本路线首次抵达丛林的成本；路线中的丛林危险也参与计分。"),
             D(MetricKeys.SnowDistanceTiles, "雪原距离", "Snow distance", "格", false, "行程", "出生点到最近雪原区域的距离。"),
+            D(MetricKeys.SnowAccessCost, "雪原路线成本", "Snow route cost", "估算分", false, "行程", "沿最低成本路线首次抵达雪原的成本。"),
             D(MetricKeys.DesertDistanceTiles, "沙漠距离", "Desert distance", "格", false, "行程", "出生点到最近沙漠区域的距离。"),
+            D(MetricKeys.DesertAccessCost, "沙漠路线成本", "Desert route cost", "估算分", false, "行程", "沿最低成本路线首次抵达沙漠的成本；地下沙漠危险权重高于地表沙漠。"),
             D(MetricKeys.ShimmerDistanceTiles, "微光距离", "Shimmer distance", "格", false, "行程", "出生点到微光液体区域的距离。"),
+            D(MetricKeys.ShimmerAccessCost, "微光路线成本", "Shimmer route cost", "估算分", false, "行程", "沿最低成本路线抵达微光液体的成本，包含深度、挖掘、群系和液体风险。"),
+            D(MetricKeys.TempleAccessCost, "神庙路线成本", "Temple route cost", "估算分", false, "行程", "抵达神庙的最低路线成本，并包含困难模式/世纪之花后的阶段锁惩罚。"),
             D(MetricKeys.ChestCount, "宝箱总数", "Chest count", "个", true, "资源", "世界文件宝箱表中的箱子数。"),
             D(MetricKeys.LifeCrystalCount, "生命水晶", "Life crystals", "个", true, "资源", "按物块尺寸折算的生命水晶数。"),
             D(MetricKeys.DemonAltarCount, "祭坛", "Altars", "个", true, "资源", "按物块尺寸折算的恶魔/猩红祭坛数。"),
@@ -83,7 +90,7 @@ public static class MetricCatalog
             result.Add(D(MetricKeys.ItemNearestTiles(item.Id), $"最近{item.ChineseName}",
                 $"Nearest {item.EnglishName}", "格", false, "宝箱物品", "到出生点的直线距离；不存在时为无穷。"));
             result.Add(D(MetricKeys.ItemAccessCost(item.Id), $"{item.ChineseName}获取成本",
-                $"{item.EnglishName} access cost", "估算分", false, "宝箱物品", "8×8 降采样寻路，考虑挖掘、液体与阶段锁；仅用于相对比较。"));
+                $"{item.EnglishName} access cost", "估算分", false, "宝箱物品", "8×8 降采样最低成本路线：距离之外还累计垂直施工、挖掘、无支撑高空、丛林/邪恶/地下沙漠/雪原、危险结构、液体与阶段锁；仅用于同算法版本的相对比较。"));
         }
         return result.AsReadOnly();
     }
@@ -194,9 +201,9 @@ public static class BuiltInProfiles
             C(MetricKeys.ItemCount(50), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 6, "至少一面魔镜"),
             C(MetricKeys.ItemCount(54), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 6, "赫尔墨斯靴"),
             C(MetricKeys.ItemCount(1579), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 4, "疾风雪靴"),
-            C(MetricKeys.ItemAccessCost(50), CriterionKind.Weighted, MetricComparison.AtMost, 900, 0, 5, "魔镜易取得"),
-            C(MetricKeys.DungeonDistanceTiles, CriterionKind.Weighted, MetricComparison.AtMost, 1800, 0, 2, "地牢较近"),
-            C(MetricKeys.JungleDistanceTiles, CriterionKind.Weighted, MetricComparison.AtMost, 1400, 0, 2, "丛林较近"),
+            C(MetricKeys.ItemAccessCost(50), CriterionKind.Weighted, MetricComparison.AtMost, 2500, 0, 5, "魔镜路线容易"),
+            C(MetricKeys.DungeonAccessCost, CriterionKind.Weighted, MetricComparison.AtMost, 4000, 0, 2, "地牢路线较短且安全"),
+            C(MetricKeys.JungleAccessCost, CriterionKind.Weighted, MetricComparison.AtMost, 2500, 0, 2, "丛林路线较短且安全"),
             C(MetricKeys.SpawnFlatness, CriterionKind.Weighted, MetricComparison.AtLeast, 35, 0, 1, "出生点平整")
         ]
     };
@@ -212,6 +219,7 @@ public static class BuiltInProfiles
             C(MetricKeys.LivingTreeCount, CriterionKind.Weighted, MetricComparison.AtLeast, 2, 0, 3, "生命树"),
             C(MetricKeys.FloatingIslandCount, CriterionKind.Weighted, MetricComparison.AtLeast, 3, 0, 3, "浮空岛"),
             C(MetricKeys.ItemCount(857), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 8, "沙暴瓶"),
+            C(MetricKeys.ItemAccessCost(857), CriterionKind.Weighted, MetricComparison.AtMost, 4000, 0, 3, "沙暴瓶路线容易"),
             C(MetricKeys.ItemCount(2196), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 4, "生命木织机"),
             C(MetricKeys.ItemCount(2204), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 3, "蜂蜜分配机"),
             C(MetricKeys.ItemCount(3000), CriterionKind.Weighted, MetricComparison.AtLeast, 1, 0, 5, "炼药桌"),
@@ -245,8 +253,10 @@ public static class BuiltInProfiles
             C(MetricKeys.GemTileCount, CriterionKind.Weighted, MetricComparison.AtLeast, 1100, 0, 3, "宝石"),
             C(MetricKeys.HellstoneCount, CriterionKind.Weighted, MetricComparison.AtLeast, 8000, 0, 3, "狱石"),
             C(MetricKeys.LifeCrystalCount, CriterionKind.Weighted, MetricComparison.AtLeast, 250, 0, 4, "生命水晶"),
+            C(MetricKeys.SpawnNearestLifeCrystalAccessCost, CriterionKind.Weighted, MetricComparison.AtMost, 1600, 0, 2, "早期生命水晶易取得"),
             C(MetricKeys.MinecartTrackTiles, CriterionKind.Weighted, MetricComparison.AtLeast, 3000, 0, 3, "矿车轨道"),
-            C(MetricKeys.ChestCount, CriterionKind.Weighted, MetricComparison.AtLeast, 300, 0, 4, "宝箱")
+            C(MetricKeys.ChestCount, CriterionKind.Weighted, MetricComparison.AtLeast, 300, 0, 4, "宝箱"),
+            C(MetricKeys.ShimmerAccessCost, CriterionKind.Weighted, MetricComparison.AtMost, 5500, 0, 2, "微光路线容易")
         ]
     };
 

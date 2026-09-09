@@ -37,6 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw 'App publish failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'CLI publish failed.' }
 
 Copy-Item -LiteralPath (Join-Path $repository 'README.md') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository 'CHANGELOG.md') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository 'LICENSE') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository 'NOTICE.md') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository 'docs') -Destination $stage -Recurse

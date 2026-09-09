@@ -24,6 +24,19 @@ public enum WorldEvil
     Crimson = 2
 }
 
+/// <summary>
+/// Priority passed to vanilla TerrariaServer. Values intentionally match the
+/// server configuration contract documented by the official Terraria Wiki.
+/// </summary>
+public enum ServerProcessPriority
+{
+    Fastest = 1,
+    AboveNormal = 2,
+    Balanced = 3,
+    LowImpact = 4,
+    Idle = 5
+}
+
 [Flags]
 public enum SpecialSeedFlags
 {
@@ -128,6 +141,7 @@ public sealed record GenerationSettings
     public int MaximumAttempts { get; init; } = 100;
     public int WinnersToKeep { get; init; } = 10;
     public int Parallelism { get; init; } = 1;
+    public ServerProcessPriority ServerPriority { get; init; } = ServerProcessPriority.Balanced;
     public TimeSpan PerWorldTimeout { get; init; } = TimeSpan.FromMinutes(8);
     public bool KeepRejectedWorlds { get; init; }
     public int TopResultsToTrack { get; init; } = 50;
@@ -143,6 +157,8 @@ public sealed record GenerationSettings
             throw new ArgumentOutOfRangeException(nameof(WinnersToKeep));
         if (Parallelism is < 1 or > 8)
             throw new ArgumentOutOfRangeException(nameof(Parallelism), "Parallelism must be between 1 and 8.");
+        if (!Enum.IsDefined(ServerPriority))
+            throw new ArgumentOutOfRangeException(nameof(ServerPriority));
         if (PerWorldTimeout < TimeSpan.FromSeconds(30) || PerWorldTimeout > TimeSpan.FromHours(2))
             throw new ArgumentOutOfRangeException(nameof(PerWorldTimeout));
         if (TopResultsToTrack < WinnersToKeep || TopResultsToTrack > 100_000)
@@ -357,11 +373,18 @@ public static class MetricKeys
     public const string SpawnFlatness = "spawn.flatness";
     public const string SpawnNearestChestTiles = "spawn.nearestChestTiles";
     public const string SpawnNearestLifeCrystalTiles = "spawn.nearestLifeCrystalTiles";
+    public const string SpawnNearestLifeCrystalAccessCost = "spawn.nearestLifeCrystalAccessCost";
     public const string DungeonDistanceTiles = "travel.dungeonDistanceTiles";
+    public const string DungeonAccessCost = "travel.dungeonAccessCost";
     public const string JungleDistanceTiles = "travel.jungleDistanceTiles";
+    public const string JungleAccessCost = "travel.jungleAccessCost";
     public const string SnowDistanceTiles = "travel.snowDistanceTiles";
+    public const string SnowAccessCost = "travel.snowAccessCost";
     public const string DesertDistanceTiles = "travel.desertDistanceTiles";
+    public const string DesertAccessCost = "travel.desertAccessCost";
     public const string ShimmerDistanceTiles = "travel.shimmerDistanceTiles";
+    public const string ShimmerAccessCost = "travel.shimmerAccessCost";
+    public const string TempleAccessCost = "travel.templeAccessCost";
     public const string ChestCount = "chests.count";
     public const string LifeCrystalCount = "resources.lifeCrystals";
     public const string DemonAltarCount = "resources.altars";

@@ -9,6 +9,8 @@ namespace TerrariaSeedRoller.Core;
 public sealed class WorldAnalyzer
 {
     private const int Scale = 8;
+    private const double ProgressionLockPenalty = 1200d;
+    private static readonly CellFlags[] TileClassifications = CreateTileClassifications();
 
     public WorldAnalysis Analyze(string worldPath, RollProfile? profile = null,
         CancellationToken cancellationToken = default)
@@ -27,8 +29,9 @@ public sealed class WorldAnalyzer
         PopulateWorldMetrics(world, coarse, regions, metrics);
         PopulateSurfaceSpreadMetrics(world, metrics, cancellationToken);
 
-        double[] accessCosts = CalculateAccessCosts(world, coarse, cancellationToken);
-        List<ItemFinding> findings = BuildItemFindings(world, coarse, accessCosts, metrics);
+        AccessCostMap accessCosts = CalculateAccessCosts(world, coarse, cancellationToken);
+        PopulateAccessMetrics(accessCosts, metrics);
+        List<ItemFinding> findings = BuildItemFindings(world, coarse, accessCosts.Cells, metrics);
         PopulateLootMetrics(world, findings, metrics);
 
         IReadOnlyDictionary<string, double> frozenMetrics =
@@ -60,6 +63,7 @@ public sealed class WorldAnalyzer
         float[] movementCosts = new float[flags.Length];
         byte[] overview = new byte[flags.Length];
         WorldTileGrid grid = world.Grid;
+        double nearestLifeCrystalSquared = double.PositiveInfinity;
 
         for (int cellX = 0; cellX < coarseWidth; cellX++)
         {
@@ -76,6 +80,14 @@ public sealed class WorldAnalyzer
                 int water = 0;
                 int lava = 0;
                 int shimmer = 0;
+                int jungle = 0;
+                int snow = 0;
+                int desert = 0;
+                int evil = 0;
+                int dungeon = 0;
+                int spider = 0;
+                int hive = 0;
+                int temple = 0;
                 for (int x = startX; x < endX; x++)
                 {
                     for (int y = startY; y < endY; y++)
@@ -86,12 +98,27 @@ public sealed class WorldAnalyzer
                         byte liquid = grid.LiquidClasses[index];
                         if (tile != WorldTileGrid.Air)
                         {
-                            cellFlags |= ClassifyTile(tile);
+                            CellFlags tileFlags = ClassifyTile(tile);
+                            cellFlags |= tileFlags;
                             if (!TileIds.IsPassableDecoration(tile)) solid++;
                             if (TileIds.IsDungeonBrick(tile) || tile == TileIds.LihzahrdBrick ||
-                                TileIds.Evil.Contains(tile)) hard++;
+                                (tileFlags & (CellFlags.Corruption | CellFlags.Crimson)) != 0) hard++;
+                            if ((tileFlags & CellFlags.Jungle) != 0) jungle++;
+                            if ((tileFlags & CellFlags.Snow) != 0) snow++;
+                            if ((tileFlags & CellFlags.Desert) != 0) desert++;
+                            if ((tileFlags & (CellFlags.Corruption | CellFlags.Crimson)) != 0) evil++;
+                            if ((tileFlags & CellFlags.Dungeon) != 0) dungeon++;
+                            if ((tileFlags & CellFlags.Hive) != 0) hive++;
+                            if ((tileFlags & CellFlags.Temple) != 0) temple++;
+                            if (tile == TileIds.LifeCrystal)
+                            {
+                                double dx = x - world.Metadata.Spawn.X;
+                                double dy = y - world.Metadata.Spawn.Y;
+                                nearestLifeCrystalSquared = Math.Min(nearestLifeCrystalSquared,
+                                    dx * dx + dy * dy);
+                            }
                         }
-                        cellFlags |= wall switch
+                        CellFlags wallFlags = wall switch
                         {
                             WallClasses.Dungeon => CellFlags.Dungeon,
                             WallClasses.Spider => CellFlags.Spider,
@@ -101,6 +128,11 @@ public sealed class WorldAnalyzer
                             WallClasses.Granite => CellFlags.Granite,
                             _ => CellFlags.None
                         };
+                        cellFlags |= wallFlags;
+                        if ((wallFlags & CellFlags.Dungeon) != 0) dungeon++;
+                        if ((wallFlags & CellFlags.Spider) != 0) spider++;
+                        if ((wallFlags & CellFlags.Hive) != 0) hive++;
+                        if ((wallFlags & CellFlags.Temple) != 0) temple++;
                         if (liquid == 1) water++;
                         else if (liquid == 2) lava++;
                         else if (liquid == 4) shimmer++;
@@ -113,32 +145,51 @@ public sealed class WorldAnalyzer
                 flags[cellIndex] = cellFlags;
                 overview[cellIndex] = OverviewClass(cellFlags);
                 int area = Math.Max(1, (endX - startX) * (endY - startY));
-                movementCosts[cellIndex] = 1f + 4f * solid / area + 4f * hard / area +
-                    2f * water / area + 15f * lava / area;
+                bool unsupportedSky = endY < world.Metadata.WorldSurface - 40 && solid == 0;
+                float desertWeight = startY >= world.Metadata.WorldSurface ? 3f : 1.25f;
+                movementCosts[cellIndex] = 1f +
+                    4f * solid / area + 4f * hard / area +
+                    2f * water / area + 15f * lava / area +
+                    2.75f * jungle / area + 1f * snow / area +
+                    desertWeight * desert / area + 2.5f * evil / area +
+                    7f * dungeon / area + 2.5f * spider / area +
+                    4f * hive / area + 12f * temple / area +
+                    (unsupportedSky ? 1.5f : 0f);
             }
         }
-        return new CoarseWorld(coarseWidth, coarseHeight, flags, movementCosts, overview);
+        return new CoarseWorld(coarseWidth, coarseHeight, flags, movementCosts, overview,
+            Math.Sqrt(nearestLifeCrystalSquared));
     }
 
-    private static CellFlags ClassifyTile(ushort tile)
+    private static CellFlags ClassifyTile(ushort tile) =>
+        tile < TileClassifications.Length ? TileClassifications[tile] : CellFlags.None;
+
+    private static CellFlags[] CreateTileClassifications()
     {
-        CellFlags flags = CellFlags.None;
-        if (TileIds.Corruption.Contains(tile)) flags |= CellFlags.Corruption;
-        if (TileIds.Crimson.Contains(tile)) flags |= CellFlags.Crimson;
-        if (TileIds.Jungle.Contains(tile)) flags |= CellFlags.Jungle;
-        if (TileIds.Snow.Contains(tile)) flags |= CellFlags.Snow;
-        if (TileIds.Desert.Contains(tile)) flags |= CellFlags.Desert;
-        if (tile == TileIds.MushroomGrass || tile == TileIds.MushroomVines) flags |= CellFlags.Mushroom;
-        if (TileIds.IsDungeonBrick(tile)) flags |= CellFlags.Dungeon;
-        if (tile == TileIds.LihzahrdBrick) flags |= CellFlags.Temple;
-        if (tile == TileIds.Hive) flags |= CellFlags.Hive;
-        if (TileIds.IsMarble(tile)) flags |= CellFlags.Marble;
-        if (TileIds.IsGranite(tile)) flags |= CellFlags.Granite;
-        if (TileIds.IsCloud(tile)) flags |= CellFlags.FloatingIsland;
-        if (TileIds.IsLivingTree(tile)) flags |= CellFlags.LivingTree;
-        if (tile == TileIds.SandstoneBrick) flags |= CellFlags.Pyramid;
-        if (tile == TileIds.MinecartTrack) flags |= CellFlags.Track;
-        return flags;
+        CellFlags[] result = new CellFlags[1024];
+        for (ushort tile = 0; tile < result.Length; tile++)
+        {
+            CellFlags flags = CellFlags.None;
+            if (TileIds.Corruption.Contains(tile)) flags |= CellFlags.Corruption;
+            if (TileIds.Crimson.Contains(tile)) flags |= CellFlags.Crimson;
+            if (TileIds.Jungle.Contains(tile)) flags |= CellFlags.Jungle;
+            if (TileIds.Snow.Contains(tile)) flags |= CellFlags.Snow;
+            if (TileIds.Desert.Contains(tile)) flags |= CellFlags.Desert;
+            if (tile == TileIds.MushroomGrass || tile == TileIds.MushroomVines)
+                flags |= CellFlags.Mushroom;
+            if (TileIds.IsDungeonBrick(tile)) flags |= CellFlags.Dungeon;
+            if (tile == TileIds.LihzahrdBrick) flags |= CellFlags.Temple;
+            if (tile == TileIds.Hive) flags |= CellFlags.Hive;
+            if (TileIds.IsMarble(tile)) flags |= CellFlags.Marble;
+            if (TileIds.IsGranite(tile)) flags |= CellFlags.Granite;
+            if (TileIds.IsCloud(tile)) flags |= CellFlags.FloatingIsland;
+            if (TileIds.IsLivingTree(tile)) flags |= CellFlags.LivingTree;
+            if (tile == TileIds.SandstoneBrick) flags |= CellFlags.Pyramid;
+            if (tile == TileIds.MinecartTrack) flags |= CellFlags.Track;
+            if (tile == TileIds.LifeCrystal) flags |= CellFlags.LifeCrystal;
+            result[tile] = flags;
+        }
+        return result;
     }
 
     private static byte OverviewClass(CellFlags flags)
@@ -346,8 +397,7 @@ public sealed class WorldAnalyzer
         metrics[MetricKeys.ShimmerDistanceTiles] = NearestDistance(meta.Spawn, shimmer);
         metrics[MetricKeys.SpawnNearestChestTiles] = world.Chests.Count == 0 ? double.PositiveInfinity :
             world.Chests.Min(c => Distance(meta.Spawn, c.Position));
-        metrics[MetricKeys.SpawnNearestLifeCrystalTiles] = NearestTileDistance(world.Grid,
-            meta.Spawn, TileIds.LifeCrystal);
+        metrics[MetricKeys.SpawnNearestLifeCrystalTiles] = coarse.NearestLifeCrystalDistance;
         metrics[MetricKeys.SpawnFlatness] = CalculateSpawnFlatness(world);
     }
 
@@ -496,9 +546,21 @@ public sealed class WorldAnalyzer
         metrics[MetricKeys.EvilCombinedSurfaceWidthTiles] = sourceColumns.Count(v => v);
     }
 
-    private static double[] CalculateAccessCosts(ParsedWorld world, CoarseWorld coarse,
+    private static AccessCostMap CalculateAccessCosts(ParsedWorld world, CoarseWorld coarse,
         CancellationToken token)
     {
+        HashSet<int> remainingTargets = world.Chests
+            .Where(chest => chest.Items.Any(item => ImportantItemCatalog.ById.ContainsKey(item.ItemId)))
+            .Select(chest => coarse.Index(
+                Math.Clamp(chest.Position.X / Scale, 0, coarse.Width - 1),
+                Math.Clamp(chest.Position.Y / Scale, 0, coarse.Height - 1)))
+            .ToHashSet();
+        CellFlags pendingDestinations = CellFlags.Dungeon | CellFlags.Jungle | CellFlags.Snow |
+            CellFlags.Desert | CellFlags.Shimmer | CellFlags.Temple | CellFlags.LifeCrystal;
+        int dungeonEntrance = coarse.Index(
+            Math.Clamp(world.Metadata.Dungeon.X / Scale, 0, coarse.Width - 1),
+            Math.Clamp(world.Metadata.Dungeon.Y / Scale, 0, coarse.Height - 1));
+        Dictionary<CellFlags, double> destinationCosts = [];
         double[] distance = new double[coarse.Flags.Length];
         Array.Fill(distance, double.PositiveInfinity);
         int startX = Math.Clamp(world.Metadata.Spawn.X / Scale, 0, coarse.Width - 1);
@@ -511,6 +573,20 @@ public sealed class WorldAnalyzer
         while (queue.TryDequeue(out int current, out double priority))
         {
             if (priority != distance[current]) continue;
+            remainingTargets.Remove(current);
+            CellFlags reached = coarse.Flags[current] & pendingDestinations & ~CellFlags.Dungeon;
+            if (current == dungeonEntrance && (pendingDestinations & CellFlags.Dungeon) != 0)
+                reached |= CellFlags.Dungeon;
+            if (reached != CellFlags.None)
+            {
+                foreach (CellFlags destination in DestinationFlags)
+                {
+                    if ((reached & destination) == 0) continue;
+                    destinationCosts[destination] = priority;
+                    pendingDestinations &= ~destination;
+                }
+            }
+            if (remainingTargets.Count == 0 && pendingDestinations == CellFlags.None) break;
             if ((++visited & 8191) == 0) token.ThrowIfCancellationRequested();
             int x = current / coarse.Height;
             int y = current % coarse.Height;
@@ -519,13 +595,26 @@ public sealed class WorldAnalyzer
             {
                 if ((uint)nx >= (uint)coarse.Width || (uint)ny >= (uint)coarse.Height) return;
                 int next = coarse.Index(nx, ny);
-                double candidate = priority + (coarse.MovementCosts[current] + coarse.MovementCosts[next]) * 4;
+                double directionMultiplier = ny == y ? 1d : 1.35d;
+                double candidate = priority + (coarse.MovementCosts[current] +
+                    coarse.MovementCosts[next]) * 4d * directionMultiplier;
                 if (candidate >= distance[next]) return;
                 distance[next] = candidate;
                 queue.Enqueue(next, candidate);
             }
         }
-        return distance;
+        return new AccessCostMap(distance, destinationCosts);
+    }
+
+    private static void PopulateAccessMetrics(AccessCostMap costs, Dictionary<string, double> metrics)
+    {
+        metrics[MetricKeys.DungeonAccessCost] = costs.Get(CellFlags.Dungeon);
+        metrics[MetricKeys.JungleAccessCost] = costs.Get(CellFlags.Jungle);
+        metrics[MetricKeys.SnowAccessCost] = costs.Get(CellFlags.Snow);
+        metrics[MetricKeys.DesertAccessCost] = costs.Get(CellFlags.Desert);
+        metrics[MetricKeys.ShimmerAccessCost] = costs.Get(CellFlags.Shimmer);
+        metrics[MetricKeys.TempleAccessCost] = costs.Get(CellFlags.Temple) + ProgressionLockPenalty;
+        metrics[MetricKeys.SpawnNearestLifeCrystalAccessCost] = costs.Get(CellFlags.LifeCrystal);
     }
 
     private static List<ItemFinding> BuildItemFindings(ParsedWorld world, CoarseWorld coarse,
@@ -538,7 +627,8 @@ public sealed class WorldAnalyzer
             string kind = ChestKind(chest);
             int cx = Math.Clamp(chest.Position.X / Scale, 0, coarse.Width - 1);
             int cy = Math.Clamp(chest.Position.Y / Scale, 0, coarse.Height - 1);
-            double access = accessCosts[coarse.Index(cx, cy)];
+            double access = accessCosts[coarse.Index(cx, cy)] +
+                (locked ? ProgressionLockPenalty : 0d);
             foreach (ChestItem item in chest.Items)
             {
                 if (!ImportantItemCatalog.ById.TryGetValue(item.ItemId, out ImportantItem? definition)) continue;
@@ -747,19 +837,6 @@ public sealed class WorldAnalyzer
         return nearest;
     }
 
-    private static double NearestTileDistance(WorldTileGrid grid, TilePosition from, ushort tile)
-    {
-        double bestSquared = double.PositiveInfinity;
-        for (int x = 0; x < grid.Width; x++)
-            for (int y = 0; y < grid.Height; y++)
-            {
-                if (grid.TileAt(x, y) != tile) continue;
-                double dx = x - from.X, dy = y - from.Y;
-                bestSquared = Math.Min(bestSquared, dx * dx + dy * dy);
-            }
-        return Math.Sqrt(bestSquared);
-    }
-
     private static double Distance(TilePosition a, TilePosition b)
     {
         double dx = a.X - b.X, dy = a.Y - b.Y;
@@ -775,12 +852,26 @@ public sealed class WorldAnalyzer
         Snow = 1 << 3, Desert = 1 << 4, Mushroom = 1 << 5, Dungeon = 1 << 6,
         Temple = 1 << 7, Hive = 1 << 8, Marble = 1 << 9, Granite = 1 << 10,
         Spider = 1 << 11, FloatingIsland = 1 << 12, LivingTree = 1 << 13,
-        Shimmer = 1 << 14, Pyramid = 1 << 15, Lava = 1 << 16, Track = 1 << 17
+        Shimmer = 1 << 14, Pyramid = 1 << 15, Lava = 1 << 16, Track = 1 << 17,
+        LifeCrystal = 1 << 18
     }
 
+    private static readonly CellFlags[] DestinationFlags =
+    [
+        CellFlags.Dungeon, CellFlags.Jungle, CellFlags.Snow, CellFlags.Desert,
+        CellFlags.Shimmer, CellFlags.Temple, CellFlags.LifeCrystal
+    ];
+
     private sealed record CoarseWorld(int Width, int Height, CellFlags[] Flags,
-        float[] MovementCosts, byte[] Overview)
+        float[] MovementCosts, byte[] Overview, double NearestLifeCrystalDistance)
     {
         public int Index(int x, int y) => x * Height + y;
+    }
+
+    private sealed record AccessCostMap(double[] Cells,
+        IReadOnlyDictionary<CellFlags, double> Destinations)
+    {
+        public double Get(CellFlags destination) =>
+            Destinations.GetValueOrDefault(destination, double.PositiveInfinity);
     }
 }

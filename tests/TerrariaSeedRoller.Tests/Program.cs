@@ -52,6 +52,7 @@ static void TestCopiedSeed()
         SpecialSeeds = SpecialSeedFlags.ForTheWorthy | SpecialSeedFlags.NoTraps
     };
     Equal("3.3.2.48.-42", settings.BuildCopiedSeed(-42));
+    Equal(ServerProcessPriority.Balanced, settings.ServerPriority);
 }
 
 static void TestMetricCatalogue()
@@ -100,6 +101,9 @@ static void TestWorld(string path)
     True(analysis.Chests.Count > 0);
     Equal(analysis.OverviewWidth * analysis.OverviewHeight, analysis.Overview.Length);
     True(analysis.Metrics.ContainsKey(MetricKeys.EvilPreHardmodeClosureLargestWidth));
+    True(analysis.Metrics.ContainsKey(MetricKeys.JungleAccessCost));
+    True(analysis.Metrics.ContainsKey(MetricKeys.ShimmerAccessCost));
+    True(analysis.ImportantItems.All(item => double.IsFinite(item.EstimatedAccessCost)));
     True(analysis.Evaluation is not null);
 }
 

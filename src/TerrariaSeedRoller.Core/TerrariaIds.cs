@@ -104,7 +104,7 @@ internal static class TileIds
 
     public static readonly HashSet<ushort> Corruption =
     [CorruptGrass, CorruptPlants, Ebonstone, CorruptThorns, Ebonsand, CorruptIce,
-      CorruptHardenedSand, CorruptSandstone, CorruptVines, CorruptJungleGrass, 200];
+      CorruptHardenedSand, CorruptSandstone, CorruptVines, CorruptJungleGrass];
 
     public static readonly HashSet<ushort> Crimson =
     [CrimsonGrass, CrimsonVines, Crimstone, Crimsand, CrimsonThorns,

@@ -86,7 +86,8 @@ internal static class Cli
         Console.WriteLine($"完成: 尝试 {session.Attempted}，成功分析 {session.Completed - session.Failed}，失败 {session.Failed}。");
         Console.WriteLine($"保留 {session.Winners.Count} 个入选世界: {session.OutputDirectory}");
         foreach ((RollResult winner, int index) in session.Winners.Select((value, index) => (value, index)))
-            Console.WriteLine($"#{index + 1} {winner.CopiedSeed}  score={winner.Analysis.Evaluation!.Score:0.##}");
+            Console.WriteLine($"#{index + 1} {winner.CopiedSeed}  score={winner.Analysis.Evaluation!.Score:0.##}  " +
+                $"生成={winner.GenerationDuration.TotalSeconds:0.00}s  分析={winner.AnalysisDuration.TotalSeconds:0.00}s");
         return session.Cancelled ? 130 : session.Winners.Count == 0 ? 2 : 0;
     }
 

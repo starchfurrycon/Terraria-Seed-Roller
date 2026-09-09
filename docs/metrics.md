@@ -10,8 +10,8 @@
 | `evil.regions.*` | 当前邪恶区域数量与宽度 |
 | `evil.prehardmode.*` | 肉前地表自然传播闭包 |
 | `evil.*GapTiles` | 邪恶与丛林/地牢间距 |
-| `spawn.*` | 平整度、最近宝箱/生命水晶 |
-| `travel.*` | 地牢、丛林、雪原、沙漠、微光行程 |
+| `spawn.*` | 平整度、最近宝箱/生命水晶的距离与路线成本 |
+| `travel.*` | 地牢、丛林、雪原、沙漠、微光、神庙的距离或路线成本 |
 | `structures.*` | 金字塔、真剑冢、生命树、浮岛、蜂巢等 |
 | `resources.*` | 水晶、祭坛、矿、宝石、狱石、微光等 |
 | `hazards.*` | 岩浆和陷阱 |
@@ -28,4 +28,12 @@
 
 内置重要物品覆盖镜子、各类靴子、瓶子、熔岩护身符、冰鞋、沙暴瓶、水上漂靴、金属带扣、疾风脚镯、猛爪手套、花靴、三发猎枪、附魔剑、地牢主要物品、暗影钥匙、功能站、海螺、恶魔海螺、巴斯特雕像和雀杖等。
 
-距离单位为物块格。`accessCost` 是相对估算分而非格数；只能与相同世界大小/算法版本的结果比较。
+距离单位为物块格。`accessCost` 是将距离与整条最低成本路线上的群系、施工、液体、结构和阶段风险累计后的相对估算分，并非格数；只能与相同世界大小/算法版本的结果比较。除 `loot.item.<ID>.accessCost` 外，内置路线指标还包括：
+
+- `spawn.nearestLifeCrystalAccessCost`
+- `travel.dungeonAccessCost`
+- `travel.jungleAccessCost`
+- `travel.snowAccessCost`
+- `travel.desertAccessCost`
+- `travel.shimmerAccessCost`
+- `travel.templeAccessCost`

@@ -41,6 +41,14 @@ jobs:
       - shell: powershell
         run: ./scripts/build-release.ps1
 
+      # action-gh-release keeps the body of a release that already exists for
+      # the tag, so drop any stale release first and always create it fresh.
+      - name: Remove any existing release for this tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag=false || true
+
       - uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md

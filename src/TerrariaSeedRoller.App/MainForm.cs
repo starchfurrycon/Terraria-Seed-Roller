@@ -1,292 +1,681 @@
 using System.Diagnostics;
-using System.Drawing.Imaging;
+using System.Reflection;
+using Microsoft.Win32;
+using TerrariaSeedRoller.App.Controls;
+using TerrariaSeedRoller.App.Design;
+using TerrariaSeedRoller.App.Dialogs;
 using TerrariaSeedRoller.Core;
 
 namespace TerrariaSeedRoller.App;
 
-public sealed class MainForm : Form
+internal sealed class MainForm : Form
 {
-    private readonly TextBox _serverPath = new() { Dock = DockStyle.Fill };
-    private readonly TextBox _outputPath = new() { Dock = DockStyle.Fill };
-    private readonly ComboBox _size = DropDown();
-    private readonly ComboBox _difficulty = DropDown();
-    private readonly ComboBox _evil = DropDown();
-    private readonly ComboBox _preset = DropDown();
-    private readonly CheckedListBox _specialSeeds = new() { Height = 74, CheckOnClick = true };
-    private readonly NumericUpDown _startSeed = Number(int.MinValue, int.MaxValue, 0);
-    private readonly NumericUpDown _endSeed = Number(int.MinValue, int.MaxValue, int.MaxValue);
-    private readonly NumericUpDown _attempts = Number(1, 10_000_000, 20);
-    private readonly NumericUpDown _winners = Number(1, 10_000, 3);
-    private readonly NumericUpDown _parallel = Number(1, 8, 1);
-    private readonly ComboBox _serverPriority = DropDown();
-    private readonly NumericUpDown _timeout = Number(1, 120, 10);
-    private readonly CheckBox _random = new() { Text = "随机无重复顺序", Checked = true, AutoSize = true };
-    private readonly CheckBox _keepRejected = new() { Text = "保留未通过世界", AutoSize = true };
-    private readonly DataGridView _criteria = new();
-    private readonly DataGridView _results = new();
-    private readonly PictureBox _map = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(7, 16, 25), SizeMode = PictureBoxSizeMode.Zoom };
-    private readonly RichTextBox _details = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(20, 29, 39), ForeColor = Color.Gainsboro, BorderStyle = BorderStyle.None };
-    private readonly RichTextBox _log = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(12, 18, 25), ForeColor = Color.LightGray, Font = new Font("Consolas", 9) };
-    private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill };
-    private readonly Label _status = new() { Text = "就绪", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly Button _start = new() { Text = "开始 Roll 种", AutoSize = true };
-    private readonly Button _pause = new() { Text = "暂停", AutoSize = true, Enabled = false };
-    private readonly Button _cancel = new() { Text = "取消", AutoSize = true, Enabled = false };
-    private readonly Button _analyze = new() { Text = "只读分析现有世界", AutoSize = true };
-    private readonly BindingSource _resultSource = new();
+    private const int SettingsColumnWidth = 430;
+
+    // ---- generator settings -------------------------------------------------
+    private readonly FlatTextInput _serverPath = new() { PlaceholderText = "选择 TerrariaServer.exe", LeadingIcon = AppIcon.Terminal };
+    private readonly FlatTextInput _outputPath = new() { PlaceholderText = "Roll 结果输出目录", LeadingIcon = AppIcon.Folder };
+    private readonly FlatComboBox _size = new() { DisplaySelector = item => ((Choice<WorldSize>)item).Name, LeadingIcon = AppIcon.Earth };
+    private readonly FlatComboBox _difficulty = new() { DisplaySelector = item => ((Choice<WorldDifficulty>)item).Name };
+    private readonly FlatComboBox _evil = new() { DisplaySelector = item => ((Choice<WorldEvil>)item).Name };
+    private readonly ChipGroup _specialSeeds = new();
+    private readonly FlatNumericInput _startSeed = new() { Minimum = int.MinValue, Maximum = int.MaxValue, ThousandsSeparator = true };
+    private readonly FlatNumericInput _endSeed = new() { Minimum = int.MinValue, Maximum = int.MaxValue, ThousandsSeparator = true };
+    private readonly FlatCheckBox _randomOrder = new() { Text = "随机无重复顺序" };
+    private readonly FlatNumericInput _attempts = new() { Minimum = 1, Maximum = 10_000_000, Value = 20 };
+    private readonly FlatNumericInput _winners = new() { Minimum = 1, Maximum = 10_000, Value = 3 };
+    private readonly FlatNumericInput _parallel = new() { Minimum = 1, Maximum = 8, Value = 1 };
+    private readonly FlatComboBox _priority = new() { DisplaySelector = item => ((Choice<ServerProcessPriority>)item).Name };
+    private readonly FlatNumericInput _timeout = new() { Minimum = 1, Maximum = 120, Value = 10, Suffix = "分钟" };
+    private readonly FlatCheckBox _keepRejected = new() { Text = "保留未通过筛选的临时世界" };
+    private readonly FlatComboBox _preset = new() { DisplaySelector = item => ((RollProfile)item).Name, LeadingIcon = AppIcon.Layers };
+    private FieldRow _presetRow = null!;
+
+    // ---- criteria -----------------------------------------------------------
+    private readonly CriterionList _criteria = new();
+
+    // ---- results ------------------------------------------------------------
+    private readonly TableView _results = new();
+    private readonly MapView _map = new();
+    private readonly MapLegend _legend = new();
+    private readonly DetailList _details = new();
+    private readonly EmptyState _resultsEmpty = new()
+    {
+        Title = "还没有候选世界",
+        Description = "设置好世界参数和筛选条件后点击“开始 Roll 种”，或先用“只读分析现有世界”查看一个已有世界的报告。",
+        Icon = AppIcon.Mountain
+    };
+    private readonly FlatButton _openReport = new() { Text = "打开报告", Icon = AppIcon.ExternalLink, Variant = ButtonVariant.Ghost, Enabled = false };
+    private readonly FlatButton _copySeed = new() { Text = "复制种子", Icon = AppIcon.Copy, Variant = ButtonVariant.Ghost, Enabled = false };
+
+    // ---- log ----------------------------------------------------------------
+    private readonly RichTextBox _log = new()
+    {
+        Dock = DockStyle.Fill,
+        ReadOnly = true,
+        BorderStyle = BorderStyle.None,
+        BackColor = Palette.SurfaceSunken,
+        ForeColor = Palette.TextSecondary,
+        Font = Typography.Mono,
+        WordWrap = false,
+        DetectUrls = false,
+        ScrollBars = RichTextBoxScrollBars.Both,
+        ShortcutsEnabled = true
+    };
+
+    // ---- chrome -------------------------------------------------------------
+    private readonly FooterBar _footer = new();
+    private readonly FlatButton _start = new() { Text = "开始 Roll 种", Icon = AppIcon.Play, Variant = ButtonVariant.Primary };
+    private readonly FlatButton _pause = new() { Text = "暂停", Icon = AppIcon.Pause, Variant = ButtonVariant.Secondary, Enabled = false };
+    private readonly FlatButton _cancel = new() { Text = "取消", Icon = AppIcon.Stop, Variant = ButtonVariant.Danger, Enabled = false };
+    private readonly FlatButton _analyze = new() { Text = "只读分析现有世界", Icon = AppIcon.Search, Variant = ButtonVariant.Secondary };
+    private readonly SegmentedTabs _tabs = new();
+
     private readonly List<RollResult> _rollResults = [];
     private CancellationTokenSource? _cancellation;
     private PauseController? _pauseController;
+    private string? _lastReportDirectory;
 
     public MainForm()
     {
+        AutoScaleMode = AutoScaleMode.None;
+        BackColor = Palette.Canvas;
+        ForeColor = Palette.TextPrimary;
+        Font = Typography.Body;
         Text = "Terraria Seed Roller — 原版真实世界 Roll 种机";
-        MinimumSize = new Size(1100, 720);
-        Size = new Size(1450, 900);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Microsoft YaHei UI", 9);
-        BackColor = Color.FromArgb(19, 28, 38);
-        ForeColor = Color.Gainsboro;
+        KeyPreview = true;
+        DoubleBuffered = true;
+
+        ApplyDpiSizing();
 
         _serverPath.Text = FindTerrariaServer();
-        _outputPath.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        _outputPath.Text = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             "My Games", "Terraria", "SeedRollerOutput");
-        _size.DataSource = new[] { new Choice<WorldSize>("小世界", WorldSize.Small), new("中世界", WorldSize.Medium), new("大世界", WorldSize.Large) };
-        _difficulty.DataSource = new[] { new Choice<WorldDifficulty>("经典", WorldDifficulty.Classic), new("专家", WorldDifficulty.Expert), new("大师", WorldDifficulty.Master), new("旅途", WorldDifficulty.Journey) };
-        _evil.DataSource = new[] { new Choice<WorldEvil>("随机", WorldEvil.Random), new("腐化", WorldEvil.Corruption), new("猩红", WorldEvil.Crimson) };
-        _serverPriority.DataSource = new[]
+
+        SeedChoices();
+        BuildLayout();
+        WireEvents();
+        LoadProfile(BuiltInProfiles.All[0]);
+    }
+
+    // =======================================================================
+    // Layout
+    // =======================================================================
+
+    /// <summary>Number of workspace tabs; used by the diagnostic capture mode.</summary>
+    internal int WorkspaceTabCount => _tabs.Pages.Count;
+
+    /// <summary>Selects a workspace tab; used by the diagnostic capture mode.</summary>
+    internal void SelectWorkspaceTab(int index) => _tabs.SelectedIndex = index;
+
+    private void ApplyDpiSizing()
+    {
+        MinimumSize = new Size(Metrics.Scale(this, 960), Metrics.Scale(this, 620));
+        Rectangle work = (Screen.FromPoint(Cursor.Position) ?? Screen.PrimaryScreen)?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+        int width = Math.Min(Metrics.Scale(this, 1500), Math.Max(MinimumSize.Width, work.Width - Metrics.Scale(this, 40)));
+        int height = Math.Min(Metrics.Scale(this, 940), Math.Max(MinimumSize.Height, work.Height - Metrics.Scale(this, 40)));
+        Size = new Size(width, height);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyDpiSizing();
+        PerformLayout();
+        Invalidate(true);
+    }
+
+    private void SeedChoices()
+    {
+        _size.SetItems(new object[]
+        {
+            new Choice<WorldSize>("小世界 · 快速生成", WorldSize.Small),
+            new Choice<WorldSize>("中世界 · 平衡", WorldSize.Medium),
+            new Choice<WorldSize>("大世界 · 资源最多", WorldSize.Large)
+        });
+        _difficulty.SetItems(new object[]
+        {
+            new Choice<WorldDifficulty>("经典", WorldDifficulty.Classic),
+            new Choice<WorldDifficulty>("专家", WorldDifficulty.Expert),
+            new Choice<WorldDifficulty>("大师", WorldDifficulty.Master),
+            new Choice<WorldDifficulty>("旅途", WorldDifficulty.Journey)
+        });
+        _evil.SetItems(new object[]
+        {
+            new Choice<WorldEvil>("随机", WorldEvil.Random),
+            new Choice<WorldEvil>("腐化", WorldEvil.Corruption),
+            new Choice<WorldEvil>("猩红", WorldEvil.Crimson)
+        });
+        _priority.SetItems(new object[]
         {
             new Choice<ServerProcessPriority>("均衡（推荐）", ServerProcessPriority.Balanced),
-            new("最快", ServerProcessPriority.Fastest),
-            new("低影响", ServerProcessPriority.LowImpact),
-            new("空闲时运行", ServerProcessPriority.Idle)
-        };
-        foreach (SpecialSeedFlags value in Enum.GetValues<SpecialSeedFlags>().Where(v => v != SpecialSeedFlags.None))
-            _specialSeeds.Items.Add(value);
-        _preset.DataSource = BuiltInProfiles.All.ToList();
-        _preset.DisplayMember = nameof(RollProfile.Name);
+            new Choice<ServerProcessPriority>("最快", ServerProcessPriority.Fastest),
+            new Choice<ServerProcessPriority>("较高", ServerProcessPriority.AboveNormal),
+            new Choice<ServerProcessPriority>("低影响", ServerProcessPriority.LowImpact),
+            new Choice<ServerProcessPriority>("空闲时运行", ServerProcessPriority.Idle)
+        });
+        _preset.SetItems(BuiltInProfiles.All.Cast<object>());
 
-        Controls.Add(BuildLayout());
-        ConfigureCriteriaGrid();
-        ConfigureResultsGrid();
-        LoadProfile(BuiltInProfiles.All[0]);
-        WireEvents();
+        _specialSeeds.SetItems(
+            Enum.GetValues<SpecialSeedFlags>()
+                .Where(value => value != SpecialSeedFlags.None)
+                .Select(value => (DescribeSpecialSeed(value), (object)value)),
+            _ => false);
     }
 
-    private Control BuildLayout()
+    private static string DescribeSpecialSeed(SpecialSeedFlags flag) => flag switch
     {
-        SplitContainer split = new() { Dock = DockStyle.Fill, SplitterDistance = 450, BackColor = BackColor };
-        split.Panel1.Padding = new Padding(12);
-        split.Panel2.Padding = new Padding(0, 12, 12, 12);
-        split.Panel1.Controls.Add(BuildSettingsPanel());
+        SpecialSeedFlags.NotTheBees => "Not the Bees",
+        SpecialSeedFlags.Drunk => "Drunk world",
+        SpecialSeedFlags.Celebration => "Celebration",
+        SpecialSeedFlags.TheConstant => "The Constant",
+        SpecialSeedFlags.ForTheWorthy => "For the Worthy",
+        SpecialSeedFlags.NoTraps => "No Traps",
+        SpecialSeedFlags.Remix => "Remix",
+        SpecialSeedFlags.Zenith => "Zenith",
+        SpecialSeedFlags.Skyblock => "Skyblock",
+        _ => flag.ToString()
+    };
 
-        TabControl tabs = new() { Dock = DockStyle.Fill };
-        TabPage criteriaPage = new("筛选条件") { BackColor = BackColor };
-        TableLayoutPanel criteriaLayout = new() { Dock = DockStyle.Fill, RowCount = 2 };
-        criteriaLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        criteriaLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        FlowLayoutPanel criterionButtons = new() { Dock = DockStyle.Fill, AutoSize = true };
-        Button add = new() { Text = "添加指标", AutoSize = true };
-        Button remove = new() { Text = "删除选中", AutoSize = true };
-        add.Click += (_, _) => AddCriterion();
-        remove.Click += (_, _) => { foreach (DataGridViewRow row in _criteria.SelectedRows) if (!row.IsNewRow) _criteria.Rows.Remove(row); };
-        criterionButtons.Controls.AddRange([add, remove, new Label { Text = "硬条件负责淘汰；加权条件负责排序。", AutoSize = true, Padding = new Padding(8, 7, 0, 0) }]);
-        criteriaLayout.Controls.Add(criterionButtons, 0, 0);
-        criteriaLayout.Controls.Add(_criteria, 0, 1);
-        criteriaPage.Controls.Add(criteriaLayout);
+    private void BuildLayout()
+    {
+        SuspendLayout();
 
-        TabPage resultsPage = new("结果与地图") { BackColor = BackColor };
-        SplitContainer resultSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 250 };
-        resultSplit.Panel1.Controls.Add(_results);
-        SplitContainer mapSplit = new() { Dock = DockStyle.Fill, SplitterDistance = 700 };
-        mapSplit.Panel1.Controls.Add(_map);
-        mapSplit.Panel2.Controls.Add(_details);
-        resultSplit.Panel2.Controls.Add(mapSplit);
-        resultsPage.Controls.Add(resultSplit);
+        TableLayoutPanel root = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            BackColor = Palette.Canvas,
+            GrowStyle = TableLayoutPanelGrowStyle.FixedSize
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Metrics.Scale(this, 72)));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Metrics.Scale(this, 88)));
 
-        TabPage logPage = new("运行日志") { BackColor = BackColor };
-        logPage.Controls.Add(_log);
-        tabs.TabPages.AddRange([criteriaPage, resultsPage, logPage]);
-        split.Panel2.Controls.Add(tabs);
-        return split;
+        HeaderBar header = new(
+            "Terraria Seed Roller",
+            "调用本机原版 TerrariaServer 真实生成世界，只读分析并排名",
+            "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.2.0"))
+        {
+            Dock = DockStyle.Fill
+        };
+
+        root.Controls.Add(header, 0, 0);
+        root.Controls.Add(BuildBody(), 0, 1);
+        root.Controls.Add(BuildFooter(), 0, 2);
+
+        Controls.Add(root);
+        ResumeLayout(true);
     }
 
-    private Control BuildSettingsPanel()
+    private Control BuildBody()
+    {
+        TableLayoutPanel body = new()
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Palette.Canvas,
+            GrowStyle = TableLayoutPanelGrowStyle.FixedSize
+        };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Metrics.Scale(this, SettingsColumnWidth)));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Metrics.Scale(this, 6)));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        body.Controls.Add(BuildSettingsColumn(), 0, 0);
+        body.Controls.Add(new Spacer(6), 1, 0);
+        body.Controls.Add(BuildWorkspace(), 2, 0);
+        return body;
+    }
+
+    private Control BuildSettingsColumn()
+    {
+        VerticalStack stack = new() { Gap = Metrics.RowGap };
+
+        FlatButton browseServer = new() { Text = "浏览", Icon = AppIcon.FolderOpen, Variant = ButtonVariant.Secondary };
+        browseServer.Click += (_, _) => BrowseServer();
+        FlatButton browseOutput = new() { Text = "浏览", Icon = AppIcon.FolderOpen, Variant = ButtonVariant.Secondary };
+        browseOutput.Click += (_, _) => BrowseOutput();
+
+        stack.Add(new SectionHeader("生成器", AppIcon.Terminal, "使用已安装的原版服务端"));
+        stack.Add(new FieldRow("服务端", _serverPath, Metrics.LabelColumn)
+        {
+            Trailing = browseServer,
+            TrailingWidth = 74
+        });
+        stack.Add(new FieldRow("输出目录", _outputPath, Metrics.LabelColumn)
+        {
+            Trailing = browseOutput,
+            TrailingWidth = 74
+        });
+
+        stack.Add(new Spacer(6));
+        stack.Add(new SectionHeader("世界参数", AppIcon.Earth));
+        stack.Add(new FieldRow("世界大小", _size, Metrics.LabelColumn));
+        stack.Add(new FieldRow("难度", _difficulty, Metrics.LabelColumn));
+        stack.Add(new FieldRow("邪恶", _evil, Metrics.LabelColumn));
+        stack.Add(new FieldRow("特殊种子", _specialSeeds, Metrics.LabelColumn) { AutoHeightFromField = true });
+
+        stack.Add(new Spacer(6));
+        stack.Add(new SectionHeader("种子范围", AppIcon.Dice));
+        stack.Add(new FieldRow("起始种子", _startSeed, Metrics.LabelColumn));
+        stack.Add(new FieldRow("结束种子", _endSeed, Metrics.LabelColumn));
+        stack.Add(new FieldRow("顺序", _randomOrder, Metrics.LabelColumn) { FieldHeight = 24 });
+        stack.Add(new FieldRow("最多尝试", _attempts, Metrics.LabelColumn) { Hint = "每个尝试都会真实生成并分析一个世界。" });
+        stack.Add(new FieldRow("保留前 N", _winners, Metrics.LabelColumn));
+
+        stack.Add(new Spacer(6));
+        stack.Add(new SectionHeader("运行与资源", AppIcon.Sliders));
+        stack.Add(new FieldRow("并发数", _parallel, Metrics.LabelColumn) { Hint = "并发 1 配合均衡策略最稳妥，提高会显著增加 CPU、内存和磁盘压力。" });
+        stack.Add(new FieldRow("资源策略", _priority, Metrics.LabelColumn));
+        stack.Add(new FieldRow("单世界超时", _timeout, Metrics.LabelColumn));
+        stack.Add(new FieldRow("临时文件", _keepRejected, Metrics.LabelColumn) { FieldHeight = 24 });
+
+        stack.Add(new Spacer(6));
+        stack.Add(new SectionHeader("筛选预设", AppIcon.Layers));
+        _presetRow = new FieldRow("预设", _preset, Metrics.LabelColumn) { Hint = BuiltInProfiles.All[0].Description };
+        stack.Add(_presetRow);
+
+        ScrollHost scroller = new(stack) { Dock = DockStyle.Fill, BackColor = Palette.Canvas };
+        SurfaceCard card = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "Roll 种设置",
+            Subtitle = "全部参数都会写入结果目录的 session.json",
+            HeaderIcon = AppIcon.Sliders
+        };
+        card.Controls.Add(scroller);
+        scroller.Dock = DockStyle.Fill;
+
+        Panel host = new() { Dock = DockStyle.Fill, BackColor = Palette.Canvas, Padding = new Padding(Metrics.Scale(this, 14), Metrics.Scale(this, 14), Metrics.Scale(this, 7), Metrics.Scale(this, 14)) };
+        host.Controls.Add(card);
+        return host;
+    }
+
+    private Control BuildWorkspace()
+    {
+        _tabs.AddPage(new SegmentedTabs.TabPage("筛选条件", AppIcon.ListChecks, BuildCriteriaTab()));
+        _tabs.AddPage(new SegmentedTabs.TabPage("结果与地图", AppIcon.Map, BuildResultsTab()));
+        _tabs.AddPage(new SegmentedTabs.TabPage("运行日志", AppIcon.ScrollText, BuildLogTab()));
+        _tabs.Dock = DockStyle.Fill;
+
+        Panel host = new() { Dock = DockStyle.Fill, BackColor = Palette.Canvas, Padding = new Padding(Metrics.Scale(this, 7), Metrics.Scale(this, 14), Metrics.Scale(this, 14), Metrics.Scale(this, 14)) };
+        host.Controls.Add(_tabs);
+        return host;
+    }
+
+    private Control BuildCriteriaTab()
+    {
+        TableLayoutPanel layout = Grid(
+            [Col(SizeType.Percent, 100)],
+            [Row(SizeType.Absolute, Metrics.Scale(this, 46)), Row(SizeType.Percent, 100)]);
+
+        FlatButton add = new() { Text = "添加指标", Icon = AppIcon.Plus, Variant = ButtonVariant.Primary };
+        FlatButton edit = new() { Text = "编辑", Icon = AppIcon.Sliders, Variant = ButtonVariant.Secondary };
+        FlatButton remove = new() { Text = "删除", Icon = AppIcon.Trash, Variant = ButtonVariant.Ghost };
+        FlatButton up = new() { Text = "上移", Icon = AppIcon.ChevronUp, Variant = ButtonVariant.Ghost };
+        FlatButton down = new() { Text = "下移", Icon = AppIcon.ChevronDown, Variant = ButtonVariant.Ghost };
+        FlatButton reset = new() { Text = "恢复预设", Icon = AppIcon.Reset, Variant = ButtonVariant.Ghost };
+
+        add.Click += (_, _) => AddCriterion();
+        edit.Click += (_, _) => EditSelectedCriterion();
+        remove.Click += (_, _) => _criteria.RemoveSelected();
+        up.Click += (_, _) => _criteria.MoveSelected(-1);
+        down.Click += (_, _) => _criteria.MoveSelected(1);
+        reset.Click += (_, _) =>
+        {
+            if (_preset.SelectedItem is RollProfile profile) LoadProfile(profile);
+        };
+
+        FlowLayoutPanel toolbar = new()
+        {
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            AutoSize = true,
+            BackColor = Palette.Canvas,
+            Padding = new Padding(0, 0, 0, Metrics.Scale(this, 8))
+        };
+        foreach (Control control in new Control[] { add, edit, remove, up, down, reset })
+        {
+            control.Margin = new Padding(0, 0, Metrics.Scale(this, 8), 0);
+            toolbar.Controls.Add(control);
+        }
+
+        SurfaceCard card = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "筛选条件",
+            Subtitle = "硬条件负责淘汰，加权条件只影响排名得分",
+            HeaderIcon = AppIcon.ListChecks
+        };
+        card.Controls.Add(_criteria);
+        _criteria.Dock = DockStyle.Fill;
+
+        layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(card, 0, 1);
+        return layout;
+    }
+
+    private Control BuildResultsTab()
+    {
+        TableLayoutPanel layout = Grid(
+            [Col(SizeType.Percent, 100)],
+            [Row(SizeType.Percent, 42), Row(SizeType.Percent, 58)]);
+
+        // --- ranking table ---------------------------------------------------
+        SurfaceCard tableCard = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "候选世界排名",
+            Subtitle = "双击一行可打开该世界的 HTML 报告",
+            HeaderIcon = AppIcon.Chart,
+            HeaderToolbarWidth = 200,
+            Margin = new Padding(0, 0, 0, Metrics.Scale(this, 8))
+        };
+        ConfigureResultColumns();
+        _results.Dock = DockStyle.Fill;
+        _resultsEmpty.Dock = DockStyle.Fill;
+        _resultsEmpty.Visible = false;
+        Panel tableHost = new() { Dock = DockStyle.Fill, BackColor = Palette.Surface };
+        tableHost.Controls.Add(_results);
+        tableHost.Controls.Add(_resultsEmpty);
+        tableCard.Controls.Add(tableHost);
+
+        // --- map and details -------------------------------------------------
+        TableLayoutPanel lower = Grid(
+            [Col(SizeType.Percent, 58), Col(SizeType.Absolute, Metrics.Scale(this, 8)), Col(SizeType.Percent, 42)],
+            [Row(SizeType.Percent, 100)]);
+
+        SurfaceCard mapCard = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "世界概览",
+            Subtitle = "每像素代表 8×8 格 · 滚轮缩放，拖动平移，双击复位",
+            HeaderIcon = AppIcon.Map,
+            HeaderToolbarWidth = 130
+        };
+        TableLayoutPanel mapLayout = Grid(
+            [Col(SizeType.Percent, 100)],
+            [Row(SizeType.Percent, 100), Row(SizeType.Absolute, Metrics.Scale(this, 66))],
+            Palette.Surface);
+        _map.Dock = DockStyle.Fill;
+        _legend.Dock = DockStyle.Fill;
+        mapLayout.Controls.Add(_map, 0, 0);
+        mapLayout.Controls.Add(_legend, 0, 1);
+        mapCard.Controls.Add(mapLayout);
+
+        SurfaceCard detailCard = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "世界详情",
+            Subtitle = "选中世界的关键指标",
+            HeaderIcon = AppIcon.FileText,
+            HeaderToolbarWidth = 190
+        };
+        ScrollHost detailScroll = new(_details) { Dock = DockStyle.Fill };
+        detailCard.Controls.Add(detailScroll);
+
+        lower.Controls.Add(mapCard, 0, 0);
+        lower.Controls.Add(new Spacer(8), 1, 0);
+        lower.Controls.Add(detailCard, 2, 0);
+
+        layout.Controls.Add(tableCard, 0, 0);
+        layout.Controls.Add(lower, 0, 1);
+        return layout;
+    }
+
+    private void ConfigureResultColumns()
+    {
+        if (_results.Columns.Count > 0) return;
+        _results.AddColumn(new TableView.Column { Header = "排名", Weight = 0.45f, MinWidth = 48, Alignment = ContentAlignment.MiddleCenter });
+        _results.AddColumn(new TableView.Column { Header = "复制种子", Weight = 1.6f, MinWidth = 120, Emphasised = true });
+        _results.AddColumn(new TableView.Column { Header = "得分", Weight = 0.7f, MinWidth = 60, Alignment = ContentAlignment.MiddleRight, Format = value => FormatNumber(value, "0.##") });
+        _results.AddColumn(new TableView.Column { Header = "邪恶宽度", Weight = 0.8f, MinWidth = 70, Alignment = ContentAlignment.MiddleRight, Suffix = " 格", Format = value => FormatNumber(value, "0") });
+        _results.AddColumn(new TableView.Column { Header = "肉前蔓延", Weight = 0.8f, MinWidth = 70, Alignment = ContentAlignment.MiddleRight, Suffix = " 格", Format = value => FormatNumber(value, "0") });
+        _results.AddColumn(new TableView.Column { Header = "宝箱", Weight = 0.6f, MinWidth = 56, Alignment = ContentAlignment.MiddleRight, Format = value => FormatNumber(value, "0") });
+        _results.AddColumn(new TableView.Column { Header = "生成秒", Weight = 0.7f, MinWidth = 66, Alignment = ContentAlignment.MiddleRight, Format = value => FormatNumber(value, "0.0") });
+        _results.AddColumn(new TableView.Column { Header = "分析秒", Weight = 0.7f, MinWidth = 66, Alignment = ContentAlignment.MiddleRight, Format = value => FormatNumber(value, "0.0") });
+    }
+
+    private Control BuildLogTab()
+    {
+        TableLayoutPanel layout = Grid(
+            [Col(SizeType.Percent, 100)],
+            [Row(SizeType.Absolute, Metrics.Scale(this, 46)), Row(SizeType.Percent, 100)]);
+
+        FlatButton clear = new() { Text = "清空", Icon = AppIcon.Trash, Variant = ButtonVariant.Ghost };
+        FlatButton copy = new() { Text = "复制全部", Icon = AppIcon.Copy, Variant = ButtonVariant.Secondary };
+        FlatButton openOutput = new() { Text = "打开输出目录", Icon = AppIcon.FolderOpen, Variant = ButtonVariant.Secondary };
+        clear.Click += (_, _) => _log.Clear();
+        copy.Click += (_, _) =>
+        {
+            if (_log.TextLength == 0) return;
+            Clipboard.SetText(_log.Text);
+            SetStatus("日志已复制到剪贴板", AppIcon.Success, Palette.Success);
+        };
+        openOutput.Click += (_, _) => OpenDirectory(_outputPath.Text);
+
+        FlowLayoutPanel toolbar = new()
+        {
+            Dock = DockStyle.Fill,
+            WrapContents = false,
+            AutoSize = true,
+            BackColor = Palette.Canvas,
+            Padding = new Padding(0, 0, 0, Metrics.Scale(this, 8))
+        };
+        foreach (Control control in new Control[] { copy, clear, openOutput })
+        {
+            control.Margin = new Padding(0, 0, Metrics.Scale(this, 8), 0);
+            toolbar.Controls.Add(control);
+        }
+
+        SurfaceCard card = new()
+        {
+            Dock = DockStyle.Fill,
+            Title = "运行日志",
+            Subtitle = "生成与分析过程的实时输出",
+            HeaderIcon = AppIcon.ScrollText
+        };
+        Panel logHost = new() { Dock = DockStyle.Fill, BackColor = Palette.SurfaceSunken, Padding = new Padding(Metrics.Scale(this, 6)) };
+        logHost.Controls.Add(_log);
+        card.Controls.Add(logHost);
+
+        layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(card, 0, 1);
+        return layout;
+    }
+
+    private Control BuildFooter()
+    {
+        _footer.Dock = DockStyle.Fill;
+        _footer.AddButton(_start);
+        _footer.AddButton(_cancel);
+        _footer.AddButton(_pause);
+        _footer.AddButton(_analyze);
+        return _footer;
+    }
+
+    /// <summary>
+    /// Builds a table whose row and column styles are supplied explicitly. The
+    /// style collections are filled exactly once so a later <c>Add</c> can never
+    /// be silently ignored, which is what made the old layout drift.
+    /// </summary>
+    private static TableLayoutPanel Grid(ColumnStyle[] columns, RowStyle[] rows, Color? background = null)
     {
         TableLayoutPanel table = new()
         {
             Dock = DockStyle.Fill,
-            AutoScroll = true,
-            ColumnCount = 3,
-            Padding = new Padding(0),
-            GrowStyle = TableLayoutPanelGrowStyle.AddRows
+            ColumnCount = columns.Length,
+            RowCount = rows.Length,
+            BackColor = background ?? Palette.Canvas,
+            GrowStyle = TableLayoutPanelGrowStyle.FixedSize
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        Label title = new() { Text = "真实世界生成", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Padding = new Padding(0, 0, 0, 8) };
-        table.Controls.Add(title, 0, 0); table.SetColumnSpan(title, 3);
-        AddPathRow(table, "服务端", _serverPath, "浏览…", BrowseServer);
-        AddPathRow(table, "输出目录", _outputPath, "浏览…", BrowseOutput);
-        AddRow(table, "世界大小", _size);
-        AddRow(table, "难度", _difficulty);
-        AddRow(table, "邪恶", _evil);
-        AddRow(table, "特殊种子", _specialSeeds);
-        AddRow(table, "起始种子", _startSeed);
-        AddRow(table, "结束种子", _endSeed);
-        AddRow(table, "顺序", _random);
-        AddRow(table, "最多尝试", _attempts);
-        AddRow(table, "保留前 N", _winners);
-        AddRow(table, "并发数", _parallel);
-        AddRow(table, "资源策略", _serverPriority);
-        AddRow(table, "单世界超时", Inline(_timeout, new Label { Text = "分钟", AutoSize = true, Padding = new Padding(6, 6, 0, 0) }));
-        AddRow(table, "临时文件", _keepRejected);
-        AddRow(table, "筛选预设", _preset);
-
-        Label note = new()
-        {
-            Text = "使用已安装的原版 TerrariaServer 后台真实生成。不会打开游戏窗口、不会读取或写入玩家存档目录；默认只保留最终入选世界。并发 1 配合均衡资源策略最稳妥。",
-            AutoSize = true,
-            MaximumSize = new Size(410, 0),
-            ForeColor = Color.LightSteelBlue,
-            Padding = new Padding(0, 10, 0, 10)
-        };
-        int noteRow = table.RowCount++;
-        table.Controls.Add(note, 0, noteRow); table.SetColumnSpan(note, 3);
-        FlowLayoutPanel buttons = new() { AutoSize = true, Dock = DockStyle.Fill };
-        buttons.Controls.AddRange([_start, _pause, _cancel, _analyze]);
-        int buttonRow = table.RowCount++;
-        table.Controls.Add(buttons, 0, buttonRow); table.SetColumnSpan(buttons, 3);
-        int progressRow = table.RowCount++;
-        table.Controls.Add(_progress, 0, progressRow); table.SetColumnSpan(_progress, 3);
-        int statusRow = table.RowCount++;
-        table.Controls.Add(_status, 0, statusRow); table.SetColumnSpan(_status, 3);
+        foreach (ColumnStyle column in columns) table.ColumnStyles.Add(column);
+        foreach (RowStyle row in rows) table.RowStyles.Add(row);
         return table;
     }
 
-    private void ConfigureCriteriaGrid()
-    {
-        _criteria.Dock = DockStyle.Fill;
-        _criteria.AllowUserToAddRows = false;
-        _criteria.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-        _criteria.BackgroundColor = Color.FromArgb(14, 23, 32);
-        _criteria.RowHeadersVisible = false;
-        _criteria.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        _criteria.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Enabled", HeaderText = "启用", FillWeight = 35 });
-        _criteria.Columns.Add(new DataGridViewTextBoxColumn { Name = "Label", HeaderText = "条件", FillWeight = 130 });
-        _criteria.Columns.Add(new DataGridViewTextBoxColumn { Name = "Metric", HeaderText = "指标键", FillWeight = 150 });
-        _criteria.Columns.Add(new DataGridViewComboBoxColumn { Name = "Kind", HeaderText = "类型", DataSource = Enum.GetValues<CriterionKind>(), FillWeight = 60 });
-        _criteria.Columns.Add(new DataGridViewComboBoxColumn { Name = "Comparison", HeaderText = "比较", DataSource = Enum.GetValues<MetricComparison>(), FillWeight = 70 });
-        _criteria.Columns.Add(new DataGridViewTextBoxColumn { Name = "Value", HeaderText = "值", FillWeight = 55 });
-        _criteria.Columns.Add(new DataGridViewTextBoxColumn { Name = "Second", HeaderText = "第二值", FillWeight = 55 });
-        _criteria.Columns.Add(new DataGridViewTextBoxColumn { Name = "Weight", HeaderText = "权重", FillWeight = 45 });
-    }
+    private static ColumnStyle Col(SizeType type, float value) => new(type, value);
 
-    private void ConfigureResultsGrid()
-    {
-        _results.Dock = DockStyle.Fill;
-        _results.ReadOnly = true;
-        _results.AllowUserToAddRows = false;
-        _results.AutoGenerateColumns = false;
-        _results.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-        _results.BackgroundColor = Color.FromArgb(14, 23, 32);
-        _results.RowHeadersVisible = false;
-        _results.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "排名", DataPropertyName = "Rank", FillWeight = 35 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "复制种子", DataPropertyName = "Seed", FillWeight = 130 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "得分", DataPropertyName = "Score", FillWeight = 50 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "邪恶宽度", DataPropertyName = "EvilWidth", FillWeight = 60 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "肉前蔓延宽度", DataPropertyName = "SpreadWidth", FillWeight = 70 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "宝箱", DataPropertyName = "Chests", FillWeight = 45 });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "生成秒", DataPropertyName = "GenerationSeconds", FillWeight = 45, DefaultCellStyle = new DataGridViewCellStyle { Format = "0.00" } });
-        _results.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "分析秒", DataPropertyName = "AnalysisSeconds", FillWeight = 45, DefaultCellStyle = new DataGridViewCellStyle { Format = "0.00" } });
-        _results.DataSource = _resultSource;
-    }
+    private static RowStyle Row(SizeType type, float value) => new(type, value);
+
+    // =======================================================================
+    // Events
+    // =======================================================================
 
     private void WireEvents()
     {
-        _preset.SelectedIndexChanged += (_, _) => { if (_preset.SelectedItem is RollProfile p) LoadProfile(p); };
+        _preset.SelectedIndexChanged += (_, _) =>
+        {
+            if (_preset.SelectedItem is RollProfile profile) LoadProfile(profile);
+        };
         _start.Click += async (_, _) => await StartRollAsync();
         _pause.Click += (_, _) => TogglePause();
         _cancel.Click += (_, _) => _cancellation?.Cancel();
         _analyze.Click += async (_, _) => await AnalyzeWorldAsync();
         _results.SelectionChanged += (_, _) => ShowSelectedResult();
+        _results.RowActivated += (_, _) => OpenSelectedReport();
+        _criteria.ItemActivated += (_, _) => EditSelectedCriterion();
+        _criteria.SelectionChanged += (_, _) => UpdateCriteriaButtons();
+        _criteria.ItemsChanged += (_, _) => UpdateCriteriaButtons();
+        _openReport.Click += (_, _) => OpenSelectedReport();
+        _copySeed.Click += (_, _) => CopySelectedSeed();
+        _specialSeeds.SelectionChanged += (_, _) => { };
         FormClosing += (_, _) => _cancellation?.Cancel();
     }
+
+    private void UpdateCriteriaButtons()
+    {
+        bool hasSelection = _criteria.SelectedItem is not null;
+        _openReport.Enabled = _results.SelectedRow is not null;
+        _copySeed.Enabled = _results.SelectedRow is not null;
+    }
+
+    // =======================================================================
+    // Roll workflow
+    // =======================================================================
 
     private async Task StartRollAsync()
     {
         try
         {
             SetRunning(true);
-            _rollResults.Clear(); RefreshResultGrid();
-            _map.Image?.Dispose(); _map.Image = null; _details.Clear(); _log.Clear();
+            _rollResults.Clear();
+            RefreshResults();
+            _map.Image = null;
+            _details.SetEntries([]);
+            _log.Clear();
+            _lastReportDirectory = null;
+
             GenerationSettings settings = ReadSettings();
             RollProfile profile = ReadProfile();
             _cancellation = new CancellationTokenSource();
             _pauseController = new PauseController();
-            _progress.Maximum = settings.MaximumAttempts;
+            _footer.Progress.Maximum = settings.MaximumAttempts;
+            _footer.Progress.Value = 0;
+            _footer.Progress.Indeterminate = false;
+
             Progress<RollProgress> progress = new(p =>
             {
-                _progress.Value = Math.Min(_progress.Maximum, p.Completed);
-                _status.Text = $"{p.Stage} — {p.Completed}/{p.MaximumAttempts}，已通过 {p.Accepted}，失败 {p.Failed}，seed {p.CurrentSeed}";
+                _footer.Progress.Value = Math.Min(_footer.Progress.Maximum, p.Completed);
+                SetStatus(
+                    $"{p.Stage} — {p.Completed}/{p.MaximumAttempts}，通过 {p.Accepted}，失败 {p.Failed}，当前 seed {p.CurrentSeed}",
+                    AppIcon.Spinner,
+                    Palette.Info);
             });
-            AppendLog($"开始：{profile.Name}，最多 {settings.MaximumAttempts} 个世界。");
-            RollSessionResult session = await new SeedRollerEngine().RunAsync(settings, profile,
-                _pauseController, progress, AppendLog, _cancellation.Token);
+
+            AppendLog($"开始 Roll 种：预设「{profile.Name}」，最多 {settings.MaximumAttempts} 个世界。", LogLevel.Info);
+            RollSessionResult session = await new SeedRollerEngine().RunAsync(
+                settings, profile, _pauseController, progress, message => AppendLog(message), _cancellation.Token);
+
             _rollResults.AddRange(session.Winners);
-            RefreshResultGrid();
-            _status.Text = session.Cancelled
-                ? $"已取消；保存了 {session.Winners.Count} 个入选结果"
-                : $"完成；{session.Attempted} 次尝试，保存 {session.Winners.Count} 个结果";
-            AppendLog($"结果目录：{session.OutputDirectory}");
+            RefreshResults();
+            _lastReportDirectory = session.OutputDirectory;
+
+            if (session.Cancelled)
+            {
+                SetStatus($"已取消，保存了 {session.Winners.Count} 个入选结果", AppIcon.Warning, Palette.Accent);
+            }
+            else
+            {
+                SetStatus($"完成：{session.Attempted} 次尝试，保存 {session.Winners.Count} 个结果", AppIcon.Success, Palette.Success);
+            }
+            AppendLog($"结果目录：{session.OutputDirectory}", LogLevel.Info);
         }
         catch (Exception ex)
         {
-            _status.Text = "失败：" + ex.Message;
-            AppendLog(ex.ToString());
+            SetStatus("失败：" + ex.Message, AppIcon.Error, Palette.Danger);
+            AppendLog(ex.ToString(), LogLevel.Error);
             MessageBox.Show(this, ex.Message, "Roll 种失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
-            _cancellation?.Dispose(); _cancellation = null; _pauseController = null;
+            _cancellation?.Dispose();
+            _cancellation = null;
+            _pauseController = null;
+            _footer.Progress.Indeterminate = false;
             SetRunning(false);
         }
     }
 
     private async Task AnalyzeWorldAsync()
     {
-        using OpenFileDialog dialog = new() { Filter = "Terraria 世界 (*.wld)|*.wld", Title = "选择要只读分析的世界" };
+        using OpenFileDialog dialog = new()
+        {
+            Filter = "Terraria 世界 (*.wld)|*.wld|所有文件 (*.*)|*.*",
+            Title = "选择要只读分析的世界"
+        };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
         try
         {
             SetRunning(true);
-            _status.Text = "只读分析中…";
+            _footer.Progress.Indeterminate = true;
+            SetStatus("只读分析中…", AppIcon.Spinner, Palette.Info);
             RollProfile profile = ReadProfile();
             WorldAnalysis analysis = await Task.Run(() => new WorldAnalyzer().Analyze(dialog.FileName, profile));
-            string report = Path.Combine(Path.GetFullPath(_outputPath.Text),
+            string report = Path.Combine(
+                Path.GetFullPath(_outputPath.Text),
                 $"analysis_{Path.GetFileNameWithoutExtension(dialog.FileName)}_{DateTime.Now:yyyyMMdd_HHmmss}");
             ReportWriter.Write(analysis, report);
-            RollResult displayed = new(0, analysis.Metadata.SeedText, analysis.WorldPath,
-                TimeSpan.Zero, TimeSpan.Zero, analysis);
-            _rollResults.Clear(); _rollResults.Add(displayed); RefreshResultGrid();
-            _status.Text = "分析完成；原世界未被修改";
-            AppendLog($"分析报告：{Path.Combine(report, "report.html")}");
+            _lastReportDirectory = report;
+
+            _rollResults.Clear();
+            _rollResults.Add(new RollResult(0, analysis.Metadata.SeedText, analysis.WorldPath, TimeSpan.Zero, TimeSpan.Zero, analysis));
+            RefreshResults();
+            SetStatus("分析完成，原世界文件未被修改", AppIcon.Success, Palette.Success);
+            AppendLog($"分析报告：{Path.Combine(report, "report.html")}", LogLevel.Info);
         }
         catch (Exception ex)
         {
-            _status.Text = "分析失败：" + ex.Message;
+            SetStatus("分析失败：" + ex.Message, AppIcon.Error, Palette.Danger);
+            AppendLog(ex.ToString(), LogLevel.Error);
             MessageBox.Show(this, ex.Message, "分析失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        finally { SetRunning(false); }
+        finally
+        {
+            _footer.Progress.Indeterminate = false;
+            SetRunning(false);
+        }
     }
 
     private GenerationSettings ReadSettings()
     {
-        int start = decimal.ToInt32(_startSeed.Value), end = decimal.ToInt32(_endSeed.Value);
+        int start = decimal.ToInt32(_startSeed.Value);
+        int end = decimal.ToInt32(_endSeed.Value);
         if (end < start) throw new ArgumentException("结束种子不能小于起始种子。");
+
         SpecialSeedFlags special = SpecialSeedFlags.None;
-        foreach (SpecialSeedFlags item in _specialSeeds.CheckedItems) special |= item;
+        foreach (object value in _specialSeeds.CheckedValues)
+        {
+            if (value is SpecialSeedFlags flag) special |= flag;
+        }
+
         return new GenerationSettings
         {
             TerrariaServerPath = Path.GetFullPath(_serverPath.Text.Trim()),
@@ -295,12 +684,12 @@ public sealed class MainForm : Form
             Difficulty = ((Choice<WorldDifficulty>)_difficulty.SelectedItem!).Value,
             Evil = ((Choice<WorldEvil>)_evil.SelectedItem!).Value,
             SpecialSeeds = special,
-            Seeds = new SeedRange(start, end, _random.Checked),
+            Seeds = new SeedRange(start, end, _randomOrder.Checked),
             MaximumAttempts = decimal.ToInt32(_attempts.Value),
             WinnersToKeep = decimal.ToInt32(_winners.Value),
             TopResultsToTrack = Math.Max(decimal.ToInt32(_winners.Value), 50),
             Parallelism = decimal.ToInt32(_parallel.Value),
-            ServerPriority = ((Choice<ServerProcessPriority>)_serverPriority.SelectedItem!).Value,
+            ServerPriority = ((Choice<ServerProcessPriority>)_priority.SelectedItem!).Value,
             PerWorldTimeout = TimeSpan.FromMinutes(decimal.ToDouble(_timeout.Value)),
             KeepRejectedWorlds = _keepRejected.Checked
         };
@@ -308,138 +697,288 @@ public sealed class MainForm : Form
 
     private RollProfile ReadProfile()
     {
-        List<CriterionDefinition> criteria = [];
-        foreach (DataGridViewRow row in _criteria.Rows)
-        {
-            string metric = Convert.ToString(row.Cells["Metric"].Value)?.Trim() ?? string.Empty;
-            if (metric.Length == 0) continue;
-            criteria.Add(new CriterionDefinition
-            {
-                Enabled = Convert.ToBoolean(row.Cells["Enabled"].Value ?? true),
-                Label = Convert.ToString(row.Cells["Label"].Value),
-                MetricKey = metric,
-                Kind = ParseEnum(row.Cells["Kind"].Value, CriterionKind.Hard),
-                Comparison = ParseEnum(row.Cells["Comparison"].Value, MetricComparison.AtMost),
-                Value = ParseDouble(row.Cells["Value"].Value),
-                SecondValue = ParseDouble(row.Cells["Second"].Value),
-                Weight = ParseDouble(row.Cells["Weight"].Value, 1)
-            });
-        }
         RollProfile selected = (RollProfile)_preset.SelectedItem!;
-        return new RollProfile { Name = selected.Name, Description = selected.Description, Criteria = criteria };
+        return new RollProfile
+        {
+            Name = selected.Name,
+            Description = selected.Description,
+            Criteria = _criteria.Items.ToList()
+        };
     }
 
     private void LoadProfile(RollProfile profile)
     {
-        _criteria.Rows.Clear();
-        foreach (CriterionDefinition c in profile.Criteria)
-            _criteria.Rows.Add(c.Enabled, c.Label, c.MetricKey, c.Kind, c.Comparison, c.Value, c.SecondValue, c.Weight);
+        _criteria.SetItems(profile.Criteria, profile.Criteria.Count > 0 ? 0 : -1);
+        _presetRow.Hint = profile.Description;
+        UpdateCriteriaButtons();
     }
 
     private void AddCriterion()
     {
-        using Form picker = new() { Text = "添加指标", Width = 650, Height = 150, StartPosition = FormStartPosition.CenterParent };
-        ComboBox combo = DropDown(); combo.Dock = DockStyle.Top;
-        combo.DataSource = MetricCatalog.All.ToList(); combo.DisplayMember = nameof(MetricDefinition.ChineseName);
-        Button ok = new() { Text = "添加", Dock = DockStyle.Bottom, DialogResult = DialogResult.OK };
-        picker.Controls.Add(combo); picker.Controls.Add(ok); picker.AcceptButton = ok;
-        if (picker.ShowDialog(this) == DialogResult.OK && combo.SelectedItem is MetricDefinition metric)
-        {
-            MetricComparison comparison = metric.Preference == MetricPreference.LargerIsBetter
-                ? MetricComparison.AtLeast : MetricComparison.AtMost;
-            _criteria.Rows.Add(true, metric.ChineseName, metric.Key, CriterionKind.Weighted, comparison, 1d, 0d, 1d);
-        }
+        using CriterionDialog dialog = new(null, (string)((RollProfile)_preset.SelectedItem!).Name);
+        if (dialog.ShowDialog(this) == DialogResult.OK) _criteria.Add(dialog.Result);
     }
 
-    private void RefreshResultGrid()
+    private void EditSelectedCriterion()
     {
-        _resultSource.DataSource = _rollResults.Select((r, i) => new ResultRow
-        {
-            Rank = i + 1,
-            Seed = r.CopiedSeed,
-            Score = r.Analysis.Evaluation?.Score ?? 0,
-            EvilWidth = Get(r, MetricKeys.EvilLargestWidthTiles),
-            SpreadWidth = Get(r, MetricKeys.EvilPreHardmodeClosureLargestWidth),
-            Chests = Get(r, MetricKeys.ChestCount),
-            GenerationSeconds = r.GenerationDuration.TotalSeconds,
-            AnalysisSeconds = r.AnalysisDuration.TotalSeconds,
-            Result = r
-        }).ToList();
-        _resultSource.ResetBindings(false);
-        if (_results.Rows.Count > 0) _results.Rows[0].Selected = true;
-    }
-
-    private void ShowSelectedResult()
-    {
-        if (_results.CurrentRow?.DataBoundItem is not ResultRow row) return;
-        RollResult result = row.Result;
-        _map.Image?.Dispose(); _map.Image = CreateOverviewBitmap(result.Analysis);
-        _details.Text = $"世界：{result.Analysis.Metadata.Title}\n复制种子：{result.CopiedSeed}\n" +
-            $"尺寸：{result.Analysis.Metadata.Width} × {result.Analysis.Metadata.Height}\n" +
-            $"得分：{result.Analysis.Evaluation?.Score:0.##}\n" +
-            $"耗时：生成 {result.GenerationDuration.TotalSeconds:0.00} 秒，分析 {result.AnalysisDuration.TotalSeconds:0.00} 秒\n" +
-            $"邪恶实际最大宽度：{Get(result, MetricKeys.EvilLargestWidthTiles):0} 格\n" +
-            $"肉前自由蔓延最大宽度：{Get(result, MetricKeys.EvilPreHardmodeClosureLargestWidth):0} 格\n" +
-            $"邪恶—丛林间距：{Get(result, MetricKeys.EvilJungleGapTiles):0} 格\n" +
-            $"宝箱：{result.Analysis.Chests.Count}\n生命水晶：{Get(result, MetricKeys.LifeCrystalCount):0}\n" +
-            $"微光液体格：{Get(result, MetricKeys.ShimmerLiquidTiles):0}\n" +
-            $"微光路线成本：{Get(result, MetricKeys.ShimmerAccessCost):0}\n\n" +
-            "白点为出生点。地图每像素代表 8×8 格，只显示分析目标，不会解锁游戏地图。";
-    }
-
-    private static Bitmap CreateOverviewBitmap(WorldAnalysis analysis)
-    {
-        Color[] colors = [Color.Transparent, Color.MediumPurple, Color.IndianRed, Color.SeaGreen,
-            Color.LightBlue, Color.Goldenrod, Color.RoyalBlue, Color.DarkOrange, Color.Peru,
-            Color.DarkGray, Color.Gainsboro, Color.SlateGray, Color.MediumAquamarine,
-            Color.AliceBlue, Color.SaddleBrown, Color.HotPink, Color.OrangeRed, Color.Tan];
-        Bitmap bitmap = new(analysis.OverviewWidth, analysis.OverviewHeight, PixelFormat.Format32bppArgb);
-        using Graphics graphics = Graphics.FromImage(bitmap);
-        graphics.Clear(Color.FromArgb(7, 16, 25));
-        for (int y = 0; y < analysis.OverviewHeight; y++)
-        {
-            int x = 0;
-            while (x < analysis.OverviewWidth)
-            {
-                byte color = analysis.Overview[x * analysis.OverviewHeight + y];
-                int start = x++;
-                while (x < analysis.OverviewWidth && analysis.Overview[x * analysis.OverviewHeight + y] == color) x++;
-                if (color == 0 || color >= colors.Length) continue;
-                using SolidBrush brush = new(colors[color]);
-                graphics.FillRectangle(brush, start, y, x - start, 1);
-            }
-        }
-        float sx = analysis.Metadata.Spawn.X / 8f, sy = analysis.Metadata.Spawn.Y / 8f;
-        graphics.FillEllipse(Brushes.White, sx - 2, sy - 2, 5, 5);
-        graphics.DrawEllipse(Pens.Black, sx - 2, sy - 2, 5, 5);
-        return bitmap;
+        if (_criteria.SelectedItem is not { } current) return;
+        using CriterionDialog dialog = new(current, (string)((RollProfile)_preset.SelectedItem!).Name);
+        if (dialog.ShowDialog(this) == DialogResult.OK) _criteria.ReplaceSelected(dialog.Result);
     }
 
     private void TogglePause()
     {
         if (_pauseController is null) return;
-        if (_pauseController.IsPaused) { _pauseController.Resume(); _pause.Text = "暂停"; _status.Text = "继续运行"; }
-        else { _pauseController.Pause(); _pause.Text = "继续"; _status.Text = "已暂停（正在生成的世界完成后生效）"; }
+        if (_pauseController.IsPaused)
+        {
+            _pauseController.Resume();
+            _pause.Text = "暂停";
+            SetStatus("继续运行", AppIcon.Play, Palette.Info);
+        }
+        else
+        {
+            _pauseController.Pause();
+            _pause.Text = "继续";
+            SetStatus("已暂停（当前世界生成完成后生效）", AppIcon.Pause, Palette.Accent);
+        }
     }
 
     private void SetRunning(bool running)
     {
-        _start.Enabled = !running; _analyze.Enabled = !running; _pause.Enabled = running; _cancel.Enabled = running;
+        _start.Enabled = !running;
+        _analyze.Enabled = !running;
+        _pause.Enabled = running;
+        _cancel.Enabled = running;
         if (!running) _pause.Text = "暂停";
     }
 
-    private void AppendLog(string message)
+    private void SetStatus(string text, AppIcon icon, Color color)
     {
-        if (InvokeRequired) { BeginInvoke(() => AppendLog(message)); return; }
-        if (_log.TextLength > 400_000) _log.Select(0, 100_000);
-        if (_log.SelectionLength > 0) _log.SelectedText = string.Empty;
-        _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-        _log.SelectionStart = _log.TextLength; _log.ScrollToCaret();
+        _footer.StatusText = text;
+        _footer.StatusIcon = icon;
+        _footer.StatusColor = color;
     }
+
+    // =======================================================================
+    // Results
+    // =======================================================================
+
+    private void RefreshResults()
+    {
+        List<TableView.Row> rows = [];
+        for (int i = 0; i < _rollResults.Count; i++)
+        {
+            RollResult result = _rollResults[i];
+            rows.Add(new TableView.Row
+            {
+                Cells =
+                [
+                    i + 1,
+                    result.CopiedSeed,
+                    result.Analysis.Evaluation?.Score ?? 0d,
+                    Get(result, MetricKeys.EvilLargestWidthTiles),
+                    Get(result, MetricKeys.EvilPreHardmodeClosureLargestWidth),
+                    Get(result, MetricKeys.ChestCount),
+                    result.GenerationDuration.TotalSeconds,
+                    result.AnalysisDuration.TotalSeconds
+                ],
+                Tag = result,
+                Accent = i == 0 ? Palette.Accent : null
+            });
+        }
+
+        _results.SetRows(rows);
+        _resultsEmpty.Visible = rows.Count == 0;
+        _results.Visible = rows.Count > 0;
+        UpdateCriteriaButtons();
+    }
+
+    private void ShowSelectedResult()
+    {
+        if (_results.SelectedRow?.Tag is not RollResult result)
+        {
+            _map.Image = null;
+            _details.SetEntries([]);
+            UpdateCriteriaButtons();
+            return;
+        }
+
+        _map.Image = MapPalette.CreateOverviewBitmap(result.Analysis);
+        _map.FitToWindow();
+        _details.SetEntries(BuildDetailEntries(result));
+        UpdateCriteriaButtons();
+    }
+
+    private static IEnumerable<DetailList.Entry> BuildDetailEntries(RollResult result)
+    {
+        WorldAnalysis analysis = result.Analysis;
+        WorldMetadata metadata = analysis.Metadata;
+
+        yield return new DetailList.Section("世界");
+        yield return new DetailList.Field("标题", metadata.Title, Icon: AppIcon.Earth);
+        yield return new DetailList.Field("复制种子", result.CopiedSeed, Palette.Accent, AppIcon.Copy);
+        yield return new DetailList.Field("尺寸", $"{metadata.Width} × {metadata.Height}", Icon: AppIcon.Fit);
+        yield return new DetailList.Field("出生点", $"{metadata.Spawn.X}, {metadata.Spawn.Y}", Icon: AppIcon.Target);
+
+        yield return new DetailList.Spacer(4);
+        yield return new DetailList.Section("评价");
+        yield return new DetailList.Field("得分", (analysis.Evaluation?.Score ?? 0).ToString("0.##"), Palette.Accent, AppIcon.Chart);
+        yield return new DetailList.Field("硬条件", analysis.Evaluation is null ? "未评估" : analysis.Evaluation.PassedHardCriteria ? "全部通过" : "未通过",
+            analysis.Evaluation?.PassedHardCriteria == false ? Palette.Danger : Palette.Success, AppIcon.Shield);
+        yield return new DetailList.Field("生成耗时", $"{result.GenerationDuration.TotalSeconds:0.00} 秒", Icon: AppIcon.Clock);
+        yield return new DetailList.Field("分析耗时", $"{result.AnalysisDuration.TotalSeconds:0.00} 秒", Icon: AppIcon.Spinner);
+
+        yield return new DetailList.Spacer(4);
+        yield return new DetailList.Section("邪恶控制");
+        yield return new DetailList.Field("实际最大宽度", $"{Get(result, MetricKeys.EvilLargestWidthTiles):0} 格", Icon: AppIcon.Warning);
+        yield return new DetailList.Field("肉前蔓延宽度", $"{Get(result, MetricKeys.EvilPreHardmodeClosureLargestWidth):0} 格", Icon: AppIcon.Warning);
+        yield return new DetailList.Field("邪恶—丛林间距", $"{Get(result, MetricKeys.EvilJungleGapTiles):0} 格", Icon: AppIcon.Mountain);
+        yield return new DetailList.Field("邪恶区域数", $"{Get(result, MetricKeys.EvilRegionCount):0}", Icon: AppIcon.Layers);
+
+        yield return new DetailList.Spacer(4);
+        yield return new DetailList.Section("资源");
+        yield return new DetailList.Field("宝箱", $"{analysis.Chests.Count}", Icon: AppIcon.Gem);
+        yield return new DetailList.Field("生命水晶", $"{Get(result, MetricKeys.LifeCrystalCount):0}", Icon: AppIcon.Gem);
+        yield return new DetailList.Field("微光液体格", $"{Get(result, MetricKeys.ShimmerLiquidTiles):0}", Icon: AppIcon.Sparkles);
+        yield return new DetailList.Field("微光路线成本", $"{Get(result, MetricKeys.ShimmerAccessCost):0}", Icon: AppIcon.Chart);
+        yield return new DetailList.Field("重要物品", $"{analysis.ImportantItems.Count} 项", Icon: AppIcon.Sparkles);
+
+        if (analysis.Regions.Count > 0)
+        {
+            yield return new DetailList.Spacer(4);
+            yield return new DetailList.Section("结构");
+            foreach (IGrouping<RegionKind, WorldRegion> group in analysis.Regions.GroupBy(r => r.Kind))
+            {
+                yield return new DetailList.Field(
+                    DescribeRegion(group.Key),
+                    $"{group.Count()} 处 · 最大 {group.Max(r => r.Width)} 格宽");
+            }
+        }
+
+        yield return new DetailList.Spacer(6);
+        yield return new DetailList.Note("地图每像素代表 8×8 格，只显示分析目标，不会读取或解锁游戏内地图。白点为出生点。");
+    }
+
+    private static string DescribeRegion(RegionKind kind) => kind switch
+    {
+        RegionKind.Corruption => "腐化",
+        RegionKind.Crimson => "猩红",
+        RegionKind.Jungle => "丛林",
+        RegionKind.Snow => "雪原",
+        RegionKind.Desert => "沙漠",
+        RegionKind.GlowingMushroom => "蘑菇地",
+        RegionKind.Dungeon => "地牢",
+        RegionKind.Temple => "神庙",
+        RegionKind.Hive => "蜂巢",
+        RegionKind.Marble => "大理石洞",
+        RegionKind.Granite => "花岗岩洞",
+        RegionKind.Spider => "蜘蛛洞",
+        RegionKind.FloatingIsland => "浮空岛",
+        RegionKind.LivingTree => "生命树",
+        RegionKind.Shimmer => "微光",
+        _ => kind.ToString()
+    };
+
+    private void OpenSelectedReport()
+    {
+        if (_results.SelectedRow?.Tag is not RollResult result) return;
+        string directory = Path.GetDirectoryName(result.WorldPath) ?? _lastReportDirectory ?? string.Empty;
+        string report = Path.Combine(directory, "report.html");
+        if (File.Exists(report))
+        {
+            OpenPath(report);
+            return;
+        }
+        if (Directory.Exists(directory))
+        {
+            OpenDirectory(directory);
+            return;
+        }
+        SetStatus("找不到该世界的报告文件", AppIcon.Warning, Palette.Accent);
+    }
+
+    private void CopySelectedSeed()
+    {
+        if (_results.SelectedRow?.Tag is not RollResult result) return;
+        Clipboard.SetText(result.CopiedSeed);
+        SetStatus($"已复制种子 {result.CopiedSeed}", AppIcon.Success, Palette.Success);
+    }
+
+    private static void OpenPath(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "无法打开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private static void OpenDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            MessageBox.Show($"目录不存在：{path}", "无法打开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        OpenPath(path);
+    }
+
+    // =======================================================================
+    // Log
+    // =======================================================================
+
+    private enum LogLevel
+    {
+        Info,
+        Warning,
+        Error
+    }
+
+    private void AppendLog(string message, LogLevel level = LogLevel.Info)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => AppendLog(message, level));
+            return;
+        }
+
+        if (_log.TextLength > 400_000)
+        {
+            _log.Select(0, 120_000);
+            _log.SelectedText = string.Empty;
+        }
+
+        Color color = level switch
+        {
+            LogLevel.Error => Palette.Danger,
+            LogLevel.Warning => Palette.Accent,
+            _ => Palette.TextSecondary
+        };
+
+        _log.SelectionStart = _log.TextLength;
+        _log.SelectionLength = 0;
+        _log.SelectionColor = Palette.TextMuted;
+        _log.AppendText($"[{DateTime.Now:HH:mm:ss}] ");
+        _log.SelectionColor = color;
+        _log.AppendText(message + Environment.NewLine);
+        _log.SelectionStart = _log.TextLength;
+        _log.ScrollToCaret();
+    }
+
+    // =======================================================================
+    // Browse helpers
+    // =======================================================================
 
     private void BrowseServer()
     {
-        using OpenFileDialog dialog = new() { Filter = "TerrariaServer.exe|TerrariaServer.exe", FileName = _serverPath.Text };
+        using OpenFileDialog dialog = new()
+        {
+            Filter = "TerrariaServer.exe|TerrariaServer.exe|可执行文件 (*.exe)|*.exe",
+            FileName = _serverPath.Text
+        };
         if (dialog.ShowDialog(this) == DialogResult.OK) _serverPath.Text = dialog.FileName;
     }
 
@@ -449,44 +988,63 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) == DialogResult.OK) _outputPath.Text = dialog.SelectedPath;
     }
 
-    private static void AddPathRow(TableLayoutPanel table, string label, Control field, string buttonText, Action browse)
+    protected override void OnHandleCreated(EventArgs e)
     {
-        int row = table.RowCount++;
-        table.Controls.Add(LabelFor(label), 0, row); table.Controls.Add(field, 1, row);
-        Button button = new() { Text = buttonText, AutoSize = true }; button.Click += (_, _) => browse();
-        table.Controls.Add(button, 2, row);
+        base.OnHandleCreated(e);
+        // WinForms applies its own DPI scale to the bounds when the handle is
+        // created, so the authoritative sizing pass happens here, once
+        // DeviceDpi reports the real monitor DPI.
+        ApplyDpiSizing();
+        DarkMode.ApplyTitleBar(this);
+        DarkMode.Apply(_log);
+        _log.BackColor = Palette.SurfaceSunken;
+        _log.ForeColor = Palette.TextSecondary;
     }
 
-    private static void AddRow(TableLayoutPanel table, string label, Control field)
-    {
-        int row = table.RowCount++;
-        table.Controls.Add(LabelFor(label), 0, row); table.Controls.Add(field, 1, row); table.SetColumnSpan(field, 2);
-    }
-
-    private static Label LabelFor(string text) => new() { Text = text, AutoSize = true, Padding = new Padding(0, 6, 4, 0) };
-    private static FlowLayoutPanel Inline(params Control[] controls) { FlowLayoutPanel p = new() { AutoSize = true, Dock = DockStyle.Fill }; p.Controls.AddRange(controls); return p; }
-    private static ComboBox DropDown() => new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private static NumericUpDown Number(decimal min, decimal max, decimal value) => new() { Minimum = min, Maximum = max, Value = value, Dock = DockStyle.Fill, ThousandsSeparator = true };
-    private static T ParseEnum<T>(object? value, T fallback) where T : struct, Enum => Enum.TryParse(Convert.ToString(value), out T result) ? result : fallback;
-    private static double ParseDouble(object? value, double fallback = 0) => double.TryParse(Convert.ToString(value), out double result) ? result : fallback;
     private static double Get(RollResult result, string key) => result.Analysis.Metrics.GetValueOrDefault(key);
+
+    private static string FormatNumber(object? value, string format)
+    {
+        if (value is null) return string.Empty;
+        double number = Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+        return number.ToString(format, System.Globalization.CultureInfo.CurrentCulture);
+    }
+
     private static string FindTerrariaServer()
     {
-        string known = @"D:\Program Files (x86)\Steam\steamapps\common\Terraria\TerrariaServer.exe";
-        return File.Exists(known) ? known : string.Empty;
-    }
+        List<string> candidates = [];
+        try
+        {
+            object? steam = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null);
+            if (steam is string steamPath && steamPath.Length > 0)
+            {
+                candidates.Add(Path.Combine(steamPath, "steamapps", "common", "Terraria", "TerrariaServer.exe"));
+            }
+        }
+        catch (Exception)
+        {
+            // Registry access is best effort only.
+        }
 
-    private sealed record Choice<T>(string Name, T Value) { public override string ToString() => Name; }
-    private sealed class ResultRow
-    {
-        public int Rank { get; init; }
-        public required string Seed { get; init; }
-        public double Score { get; init; }
-        public double EvilWidth { get; init; }
-        public double SpreadWidth { get; init; }
-        public double Chests { get; init; }
-        public double GenerationSeconds { get; init; }
-        public double AnalysisSeconds { get; init; }
-        public required RollResult Result { get; init; }
+        foreach (string drive in new[] { "C:", "D:", "E:", "F:" })
+        {
+            candidates.Add($@"{drive}\Program Files (x86)\Steam\steamapps\common\Terraria\TerrariaServer.exe");
+            candidates.Add($@"{drive}\Steam\steamapps\common\Terraria\TerrariaServer.exe");
+            candidates.Add($@"{drive}\SteamLibrary\steamapps\common\Terraria\TerrariaServer.exe");
+            candidates.Add($@"{drive}\Games\Steam\steamapps\common\Terraria\TerrariaServer.exe");
+        }
+
+        foreach (string candidate in candidates)
+        {
+            try
+            {
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch (Exception)
+            {
+                // Ignore malformed paths.
+            }
+        }
+        return string.Empty;
     }
 }

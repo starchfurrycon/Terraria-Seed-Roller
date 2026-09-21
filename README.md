@@ -45,6 +45,38 @@
 
 GUI 的“只读分析现有世界”可以分析任意受支持 `.wld`。它以共享只读方式打开文件，并将报告写到独立输出目录。
 
+## 图形界面
+
+界面完全自绘，不使用系统 `TabControl`、`DataGridView`、`ComboBox` 或滚动条，因此不会出现浅色系统主题控件、错位的表格子行或“选中才看得见”的文字。整体分为左侧设置栏、右侧工作区和底部操作栏。
+
+工作区三页：
+
+- **筛选条件** — 指标、比较方式、阈值、权重与启用开关的列表，可直接双击编辑、切换启用或删除；工具栏提供“添加指标”“载入预设”“全部启用/停用”。
+- **候选结果** — 上表按加权得分排名（种子、得分、硬条件、生成耗时、世界路径），下表左侧是世界俯视地图（可缩放、拖动、一键适配，含图例），右侧是分组明细（世界变体、结构、资源、风险、路线成本）。
+- **运行日志** — 按级别着色的实时日志，支持复制与打开输出目录。
+
+界面支持 150%/200% 显示缩放与多显示器 DPI 变化，窗口会按实际工作区自动收缩，不会超出屏幕。所有自绘控件都支持 Tab 焦点、回车/空格激活与方向键导航。
+
+## 开发者诊断
+
+发布版本内置若干无界面自检开关，用于在没有人盯着屏幕的情况下验证界面：
+
+```powershell
+# 布局与调色板对比度审计，输出文本报告；有裁剪、重叠或对比度不足时返回 2
+TerrariaSeedRoller.exe --ui-audit="ui-audit.txt"
+
+# 逐个工作区页截图，用于渲染后的对比度审计
+TerrariaSeedRoller.exe --ui-shot="shots"
+
+# 从同一套矢量图形重新生成多分辨率应用图标
+TerrariaSeedRoller.exe --make-icon="app.ico"
+
+# 不打开窗口，仅验证核心程序集可加载
+TerrariaSeedRoller.exe --smoke-test
+```
+
+`scripts/shot-audit.ps1` 会读取截图，把每个文字像素追溯到它真正的背景色，并报告低于 4.5:1 的组合；当前发布界面的最差组合为 4.67:1。
+
 ## CLI
 
 ```powershell
@@ -141,6 +173,8 @@ dotnet build TerrariaSeedRoller.sln -c Release
 dotnet run --project tests/TerrariaSeedRoller.Tests -c Release
 powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1
 ```
+
+图标来自 `scripts/icons/` 中的 Lucide SVG 源，由 `scripts/generate-icons.ps1` 生成 `Design/IconData.cs`；应用图标由 `--make-icon` 从同一份图形数据生成。署名见 [`NOTICE.md`](NOTICE.md)。
 
 集成测试可把一个世界路径作为参数传给测试程序，或设置 `TSR_TEST_WORLD`。测试会在分析前后核对长度、最后写入时间和 SHA-256。
 

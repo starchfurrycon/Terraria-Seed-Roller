@@ -31,10 +31,22 @@ internal static class Program
             string output = ValueOf(args, "--ui-audit") ?? Path.Combine(AppContext.BaseDirectory, "ui-audit.txt");
             if (File.Exists(output)) File.Delete(output);
 
+            // Every built-in profile changes the criteria page (row count, badges,
+            // hint text), so each one is laid out and audited, plus the empty case
+            // and the add/edit dialog.
             using MainForm audited = new();
-            int issues = UiAudit.Run(audited, output);
+            int issues = 0;
+            for (int i = 0; i < MainForm.PresetCount; i++)
+            {
+                audited.LoadPreset(i);
+                issues += UiAudit.Run(audited, output);
+            }
+            audited.LoadEmptyCriteria();
+            issues += UiAudit.Run(audited, output);
+
             using CriterionDialog dialog = new(null, "诊断");
             issues += UiAudit.Run(dialog, output);
+
             Console.WriteLine($"total issues across all windows: {issues}");
             return issues == 0 ? 0 : 2;
         }
@@ -43,6 +55,14 @@ internal static class Program
         {
             using MainForm form = new();
             form.CreateControl();
+            for (int i = 0; i < MainForm.PresetCount; i++)
+            {
+                form.LoadPreset(i);
+                form.PerformLayout();
+            }
+            form.LoadEmptyCriteria();
+            form.PerformLayout();
+            Console.WriteLine($"smoke test ok ({MainForm.PresetCount} profiles)");
             return 0;
         }
 

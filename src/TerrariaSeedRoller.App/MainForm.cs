@@ -98,6 +98,9 @@ internal sealed class MainForm : Form
         BuildLayout();
         WireEvents();
         LoadProfile(BuiltInProfiles.All[0]);
+        // Without this the results tab opens on a bare table instead of the
+        // placeholder that explains what to do next.
+        RefreshResults();
     }
 
     // =======================================================================
@@ -109,6 +112,15 @@ internal sealed class MainForm : Form
 
     /// <summary>Selects a workspace tab; used by the diagnostic capture mode.</summary>
     internal void SelectWorkspaceTab(int index) => _tabs.SelectedIndex = index;
+
+    /// <summary>Loads one of the built-in profiles; used by the layout audit.</summary>
+    internal void LoadPreset(int index) => LoadProfile(BuiltInProfiles.All[index]);
+
+    /// <summary>Loads a profile with no criteria; used by the layout audit to exercise the empty state.</summary>
+    internal void LoadEmptyCriteria() => LoadProfile(new RollProfile { Name = "空", Description = string.Empty, Criteria = [] });
+
+    /// <summary>Number of built-in profiles; used by the layout audit.</summary>
+    internal static int PresetCount => BuiltInProfiles.All.Count;
 
     private void ApplyDpiSizing()
     {

@@ -13,8 +13,15 @@ public sealed record GeneratedWorld(
 
 public sealed class TerrariaServerGenerator
 {
-    public async Task<GeneratedWorld> GenerateAsync(GenerationSettings settings, int seed,
+    /// <summary>How often the no-output watchdog checks on a running server.</summary>
+    private static readonly TimeSpan StallCheckInterval = TimeSpan.FromSeconds(5);
+
+    public Task<GeneratedWorld> GenerateAsync(GenerationSettings settings, int seed,
         Action<string>? log = null, CancellationToken cancellationToken = default)
+        => GenerateAsync(settings, seed, log, cancellationToken, governor: null);
+
+    public async Task<GeneratedWorld> GenerateAsync(GenerationSettings settings, int seed,
+        Action<string>? log, CancellationToken cancellationToken, ResourceGovernor? governor)
     {
         settings.Validate();
         EnsureDiskSpace(settings.CandidateDirectory, settings.MinimumFreeDiskGb);
@@ -22,6 +29,11 @@ public sealed class TerrariaServerGenerator
         string workRoot = Path.Combine(root, "_work");
         Directory.CreateDirectory(workRoot);
         string safeSeed = seed.ToString(System.Globalization.CultureInfo.InvariantCulture).Replace('-', 'n');
+        // A kill during generation leaves the attempt directory behind before the
+        // journal ever learns its name, and it is far too new for age-based
+        // cleanup. Since this seed is starting over, its previous directories are
+        // known to be dead and can be reclaimed exactly.
+        DeleteSeedWorkDirectories(workRoot, safeSeed);
         string attemptDirectory = Path.Combine(workRoot,
             $"seed_{safeSeed}_{Guid.NewGuid():N}");
         Directory.CreateDirectory(attemptDirectory);
@@ -58,13 +70,22 @@ public sealed class TerrariaServerGenerator
         string lastProgressStage = string.Empty;
         int lastProgressBucket = -1;
         TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        long lastOutputTicks = Stopwatch.GetTimestamp();
         process.OutputDataReceived += (_, e) => Capture(e.Data);
         process.ErrorDataReceived += (_, e) => Capture(e.Data);
         Stopwatch stopwatch = Stopwatch.StartNew();
+        bool registered = false;
+        Task? stalled = null;
+        Task? exited = null;
         try
         {
             if (!process.Start()) throw new InvalidOperationException("TerrariaServer failed to start.");
             int ownedProcessId = process.Id;
+            ApplyServerPriority(process, settings.ServerPriority);
+            // Every server goes into the kill-on-close job, so a crash of this
+            // process can never leave one behind eating memory.
+            governor?.RegisterServer(process, root);
+            registered = true;
             log?.Invoke($"种子 {seed}: 已启动后台 TerrariaServer (PID {ownedProcessId})");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
@@ -72,8 +93,16 @@ public sealed class TerrariaServerGenerator
             using CancellationTokenSource timeout = new(settings.PerWorldTimeout);
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, timeout.Token);
-            Task exited = process.WaitForExitAsync(linked.Token);
-            Task completed = await Task.WhenAny(ready.Task, exited).ConfigureAwait(false);
+            exited = process.WaitForExitAsync(linked.Token);
+            stalled = WatchForStallAsync(settings.ServerStallTimeout);
+            Task completed = await Task.WhenAny(ready.Task, exited, stalled).ConfigureAwait(false);
+            if (completed == stalled)
+            {
+                await stalled.ConfigureAwait(false);
+                throw new TimeoutException(
+                    $"World generation for seed {seed} produced no output for " +
+                    $"{settings.ServerStallTimeout.TotalMinutes:0.#} minutes.");
+            }
             if (completed == exited)
             {
                 await exited.ConfigureAwait(false);
@@ -119,10 +148,17 @@ public sealed class TerrariaServerGenerator
             KillOwnedProcess(process);
             throw;
         }
+        finally
+        {
+            // Unregistering also resumes a server that was parked for the reserve,
+            // so a parked process can always be reaped.
+            if (registered) governor?.UnregisterServer(process.Id);
+        }
 
         void Capture(string? line)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
+            Interlocked.Exchange(ref lastOutputTicks, Stopwatch.GetTimestamp());
             lock (outputLock)
             {
                 if (output.Length > 256_000) output.Remove(0, 64_000);
@@ -144,9 +180,113 @@ public sealed class TerrariaServerGenerator
                 line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase))
                 ready.TrySetResult();
         }
+
+        // A server that stops reporting progress is stuck, not merely slow: a
+        // healthy world keeps emitting progress lines. Killing it frees the
+        // concurrency slot instead of holding it until the per-world timeout.
+        async Task WatchForStallAsync(TimeSpan stallTimeout)
+        {
+            while (true)
+            {
+                await Task.Delay(StallCheckInterval, cancellationToken).ConfigureAwait(false);
+                if (process.HasExited) return;
+                long last = Interlocked.Read(ref lastOutputTicks);
+                TimeSpan silent = Stopwatch.GetElapsedTime(last);
+                if (silent < stallTimeout) continue;
+                log?.Invoke($"种子 {seed}: TerrariaServer 已静默 {silent.TotalMinutes:0.#} 分钟，判定卡住并终止。");
+                KillOwnedProcess(process);
+                return;
+            }
+        }
     }
 
-    public static void DeleteAttemptDirectory(string attemptDirectory, string candidateDirectory)
+    /// <summary>
+    /// Applies the configured priority class to the server process itself. The
+    /// server also receives the value in its config, but setting it here means the
+    /// protection applies from the very first instruction.
+    /// </summary>
+    private static void ApplyServerPriority(Process process, ServerProcessPriority priority)
+    {
+        try
+        {
+            process.PriorityClass = priority switch
+            {
+                ServerProcessPriority.Fastest => ProcessPriorityClass.High,
+                ServerProcessPriority.AboveNormal => ProcessPriorityClass.AboveNormal,
+                ServerProcessPriority.Balanced => ProcessPriorityClass.Normal,
+                ServerProcessPriority.LowImpact => ProcessPriorityClass.BelowNormal,
+                _ => ProcessPriorityClass.Idle
+            };
+        }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        catch (PlatformNotSupportedException) { }
+    }
+
+    /// <summary>
+    /// Reclaims every previous attempt directory for one seed. Safe because the
+    /// caller is about to generate that seed from scratch, so nothing under these
+    /// paths can still be wanted.
+    /// </summary>
+    private static void DeleteSeedWorkDirectories(string workRoot, string safeSeed)
+    {
+        try
+        {
+            foreach (string directory in Directory.EnumerateDirectories(workRoot,
+                $"seed_{safeSeed}_*"))
+            {
+                try { Directory.Delete(directory, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Deletes temporary generation directories a previous run left behind.
+    /// </summary>
+    /// <remarks>
+    /// A killed run always leaves its attempt directory behind with at least
+    /// <c>serverconfig.txt</c> and <c>save/favorites.json</c> inside, so emptiness
+    /// cannot be the test. Age is the safe test instead: a directory that has not
+    /// been touched for longer than a whole per-world timeout cannot belong to a
+    /// live attempt, because a generating server keeps writing into it. Without
+    /// this every interrupted run would leak its work directories.
+    /// </remarks>
+    public static int CleanOrphanedWorkDirectories(string candidateDirectory,
+        TimeSpan? minimumAge = null)
+    {
+        string work = Path.GetFullPath(Path.Combine(candidateDirectory, "_work"));
+        if (!Directory.Exists(work)) return 0;
+        TimeSpan age = minimumAge ?? TimeSpan.FromMinutes(30);
+        DateTime cutoff = DateTime.UtcNow - age;
+        int removed = 0;
+        try
+        {
+            foreach (string directory in Directory.EnumerateDirectories(work))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) > cutoff) continue;
+                    Directory.Delete(directory, recursive: true);
+                    removed++;
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { return removed; }
+        catch (UnauthorizedAccessException) { return removed; }
+        return removed;
+    }
+
+    /// <summary>
+    /// Deletes one attempt directory, refusing any path outside the work area.
+    /// Returns true when something was actually removed.
+    /// </summary>
+    public static bool DeleteAttemptDirectory(string attemptDirectory, string candidateDirectory)
     {
         string root = Path.GetFullPath(Path.Combine(candidateDirectory, "_work"));
         string target = Path.GetFullPath(attemptDirectory);
@@ -154,7 +294,9 @@ public sealed class TerrariaServerGenerator
         if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(target, root, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Refusing to delete a directory outside the seed-roller work area.");
-        if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+        if (!Directory.Exists(target)) return false;
+        Directory.Delete(target, recursive: true);
+        return true;
     }
 
     private static string BuildConfig(GenerationSettings settings, string copiedSeed,

@@ -67,6 +67,15 @@ public enum MetricComparison
     Between
 }
 
+/// <summary>How a roll session ended. Recorded so an interrupted run can be continued.</summary>
+public enum SessionOutcome
+{
+    Running,
+    Completed,
+    Cancelled,
+    Failed
+}
+
 public sealed record SeedRange(int Start, int End, bool RandomOrder = false)
 {
     public IEnumerable<int> Enumerate(int? randomSeed = null)
@@ -147,6 +156,57 @@ public sealed record GenerationSettings
     public int TopResultsToTrack { get; init; } = 50;
     public double MinimumFreeDiskGb { get; init; } = 2;
 
+    // ---- resource protection -------------------------------------------------
+    // These values protect the tool's own ability to finish, not the machine as a
+    // whole: the roll only keeps starting work while the resources it needs to
+    // analyse and save a result are actually still available.
+
+    /// <summary>
+    /// Physical memory that must stay free before another world may start. Below
+    /// this the roll stops launching servers; further below (the reserve minus a
+    /// 256 MB hysteresis band) it also parks the servers it owns, so the tool can
+    /// still analyse and save what it has already produced instead of being
+    /// killed by the OS.
+    /// </summary>
+    public int MinimumFreeMemoryMb { get; init; } = 1536;
+
+    /// <summary>
+    /// Logical processors kept out of the roll's own parallelism budget. One
+    /// reserved core keeps the interface, the analyser and the save path
+    /// responsive while the machine is busy with something else.
+    /// </summary>
+    public int ReservedLogicalProcessors { get; init; } = 1;
+
+    /// <summary>
+    /// Hard ceiling for one generated world. Without a ceiling a single server
+    /// that balloons is free to push the whole machine into paging.
+    /// </summary>
+    public int ServerMemoryLimitMb { get; init; } = 3072;
+
+    /// <summary>
+    /// No-output watchdog. A server that stops reporting progress is killed and
+    /// treated as a failed attempt instead of holding a slot for the full
+    /// per-world timeout.
+    /// </summary>
+    public TimeSpan ServerStallTimeout { get; init; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>Raises this process above normal so it is not starved by the servers it starts.</summary>
+    public bool ProtectProcessPriority { get; init; } = true;
+
+    /// <summary>
+    /// Effective parallel world limit after reserving cores. A four-core machine
+    /// configured for parallelism 4 therefore runs at most 3 servers.
+    /// </summary>
+    public int EffectiveParallelism => Math.Max(1,
+        Math.Min(Parallelism, Environment.ProcessorCount - Math.Max(0, ReservedLogicalProcessors)));
+
+    /// <summary>
+    /// Seed for the memory-free random permutation. Persisting it makes the seed
+    /// order reproducible, which is what lets an interrupted run continue
+    /// without retrying worlds it already finished.
+    /// </summary>
+    public int? EnumerationSeed { get; init; }
+
     public void Validate()
     {
         if (!File.Exists(TerrariaServerPath))
@@ -165,6 +225,14 @@ public sealed record GenerationSettings
             throw new ArgumentOutOfRangeException(nameof(TopResultsToTrack));
         if (MinimumFreeDiskGb is < 0.25 or > 10_000)
             throw new ArgumentOutOfRangeException(nameof(MinimumFreeDiskGb));
+        if (MinimumFreeMemoryMb is < 0 or > 1_048_576)
+            throw new ArgumentOutOfRangeException(nameof(MinimumFreeMemoryMb));
+        if (ReservedLogicalProcessors is < 0 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(ReservedLogicalProcessors));
+        if (ServerMemoryLimitMb is < 0 or > 1_048_576)
+            throw new ArgumentOutOfRangeException(nameof(ServerMemoryLimitMb));
+        if (ServerStallTimeout < TimeSpan.FromSeconds(30) || ServerStallTimeout > TimeSpan.FromHours(2))
+            throw new ArgumentOutOfRangeException(nameof(ServerStallTimeout));
     }
 
     public string BuildCopiedSeed(int seed)
@@ -335,7 +403,10 @@ public sealed record RollSessionResult(
     int Failed,
     bool Cancelled,
     IReadOnlyList<RollResult> Winners,
-    string OutputDirectory);
+    string OutputDirectory,
+    bool Resumed = false,
+    SessionOutcome Outcome = SessionOutcome.Completed,
+    string? ResourceSummary = null);
 
 public sealed record RollProgress(
     int Attempted,

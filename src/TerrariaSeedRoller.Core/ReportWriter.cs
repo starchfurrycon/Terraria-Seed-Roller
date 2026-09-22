@@ -36,7 +36,10 @@ public static class ReportWriter
             session.Completed,
             session.Failed,
             session.Cancelled,
+            Outcome = session.Outcome.ToString(),
+            session.Resumed,
             session.OutputDirectory,
+            session.ResourceSummary,
             Profile = profile,
             Winners = session.Winners.Select((w, i) => new
             {

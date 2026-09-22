@@ -14,4 +14,9 @@
 - The pre-Hardmode surface closure and 8×8 access path are explicitly estimators. Do not relabel them as exact simulation.
 - Route cost is one shared Dijkstra field and must include distance, vertical movement, digging, unsupported sky, biome/structure/liquid hazards and progression locks. Stop only after every important chest and destination category has been finalized.
 - Do not vendor Terraria/decompiled code or the unlicensed seed-analyzer research repository.
+- Resource guard: measure machine-wide free physical memory with `GlobalMemoryStatusEx`, never only this process's view, and never latch. A breached reserve stops *new* worlds and parks owned servers; it must not kill in-flight work.
+- Server suspensions are reference counted and always paired; a process that is parked when it dies or is unregistered must be resumed so it can be reaped.
+- Every server goes into one `KILL_ON_JOB_CLOSE` job object. This is the only reason a hard crash does not leave orphaned servers eating memory.
+- Durability order per attempt: journal `pending` -> generate -> analyse -> copy the world out of `_work` -> journal the *staged* path. The journal must never record a `_work` path for a winner, because `_work` is deleted when the run settles.
+- `session.state.json` is replaced atomically and its `Running` outcome is what identifies an interrupted session. Keep `RollGenerationFingerprint` in sync with the generation settings that change what a seed produces.
 - Local portable SDK, research clones, generated worlds, `bin`, `obj`, and `artifacts` are intentionally ignored.

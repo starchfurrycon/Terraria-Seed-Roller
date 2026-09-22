@@ -602,8 +602,12 @@ internal sealed class MainForm : Form
             });
 
             AppendLog($"开始 Roll 种：预设「{profile.Name}」，最多 {settings.MaximumAttempts} 个世界。", LogLevel.Info);
+            AppendLog($"资源保护：并发上限 {settings.EffectiveParallelism}（预留 {settings.ReservedLogicalProcessors} 个逻辑处理器），" +
+                $"内存保留线 {settings.MinimumFreeMemoryMb} MB，服务端静默 {settings.ServerStallTimeout.TotalMinutes:0.#} 分钟自动重启该世界。",
+                LogLevel.Info);
             RollSessionResult session = await new SeedRollerEngine().RunAsync(
-                settings, profile, _pauseController, progress, message => AppendLog(message), _cancellation.Token);
+                settings, profile, _pauseController, progress, message => AppendLog(message), _cancellation.Token,
+                new RollRunOptions { ResourceLog = message => AppendLog(message, LogLevel.Warning) });
 
             _rollResults.AddRange(session.Winners);
             RefreshResults();
@@ -618,6 +622,10 @@ internal sealed class MainForm : Form
                 SetStatus($"完成：{session.Attempted} 次尝试，保存 {session.Winners.Count} 个结果", AppIcon.Success, Palette.Success);
             }
             AppendLog($"结果目录：{session.OutputDirectory}", LogLevel.Info);
+            if (session.ResourceSummary is not null)
+                AppendLog(session.ResourceSummary, LogLevel.Info);
+            if (session.Cancelled)
+                AppendLog("本次结果已全部落盘；重新运行同一输出目录即可继续被取消的会话。", LogLevel.Info);
         }
         catch (Exception ex)
         {

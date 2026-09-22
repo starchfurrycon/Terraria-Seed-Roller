@@ -1,6 +1,7 @@
 using TerrariaSeedRoller.App.Design;
 using TerrariaSeedRoller.App.Diagnostics;
 using TerrariaSeedRoller.App.Dialogs;
+using TerrariaSeedRoller.Core;
 
 namespace TerrariaSeedRoller.App;
 
@@ -11,6 +12,9 @@ internal static class Program
     {
         // Must happen before the first window so the platform picks the dark theme.
         DarkMode.PrepareProcess();
+        // The window, the analyser and the save path must stay responsive while
+        // the servers this tool starts are competing for the same machine.
+        ResourceGovernor.ProtectCurrentProcess();
         ApplicationConfiguration.Initialize();
 
         if (HasSwitch(args, "--make-icon"))

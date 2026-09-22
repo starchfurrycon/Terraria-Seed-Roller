@@ -18,6 +18,8 @@
 - 任意 Tile、Wall、Item ID 的通用指标，能够在游戏更新或特殊需求下直接扩展条件。
 - 每个入选世界附带 JSON、HTML 和 SVG 报告；专用地图不读取或写入玩家 `.map`，不会解锁游戏视野。
 - 暂停、取消、单世界超时、并发限制、磁盘余量保护和失败日志。
+- 资源保护：内存保留线、预留逻辑处理器、服务端内存上限与静默看门狗。机器被别的任务抢占时降速或等待，而不是把内存耗光后卡死。
+- 意外中断保护：每个世界分析完立即复制出临时目录并写入日志，中断的会话可以继续，也可以直接导出已经完成的世界。
 
 ## 兼容性
 
@@ -32,6 +34,27 @@
 - 1.4.5.8 小世界实测基准中，同一种子由原版生成约需 17 秒，完整只读分析约需 0.4 秒；机器、磁盘、世界大小和特殊种子会改变结果。GUI 与 CLI 会分别显示生成和分析耗时。
 - 生成器在收到 `Server started` 后验证 `.wld` 分区表和完整 Footer，立即安全退出，不再为每个世界固定多等约 1.4 秒；分析器合并整图扫描，并在所有重要目标路线都已确定后提前结束寻路。
 - 默认并发数 1、资源策略 `Balanced`，避免多个约需 500 MB 或更多内存的原版服务端互相争抢。`Fastest` 会提高进程优先级但不会减少总计算量；`LowImpact`/`Idle` 更照顾前台游戏，代价是 Roll 种更慢。
+
+## 资源保护
+
+一次 Roll 种要连续跑很久，中途被别的任务挤掉内存就前功尽弃，所以工具为自己划了一条最低资源线。默认值开箱可用，全部可在 JSON 里调整：
+
+- `MinimumFreeMemoryMb`（默认 `1536`）：系统可用物理内存低于这条线时不再启动新世界。低于 `保留线 − 256 MB` 时，工具会挂起它自己启动的服务端，把 CPU 和内存让给“分析当前世界”和“保存已完成结果”这两件必须做完的事。可用内存恢复后自动继续。上限被限制为物理内存的四分之一，避免在小内存机器上把 Roll 种锁死。
+- `ReservedLogicalProcessors`（默认 `1`）：从并发预算里扣掉的逻辑处理器数量。4 核机器即使填并发 4，实际最多同时跑 3 个服务端，留下的那个核心负责界面、分析和写盘。
+- `ServerMemoryLimitMb`（默认 `3072`）：通过 Windows 作业对象给每个服务端设的硬上限，防止单个进程失控把整机拖进页面文件。
+- `ServerStallTimeout`（默认 `3` 分钟）：服务端连续这么久没有任何输出就判定卡住，杀掉并按失败处理，而不是占着并发位等到单世界超时。正常生成会持续上报进度，不会误杀慢而健康的世界。
+- `ProtectProcessPriority`（默认 `true`）：把本进程优先级提到 `AboveNormal`，使界面和保存路径不会被它自己启动的服务端饿死。
+
+工具还会在每次运行时清理上一次中断留下的服务端进程和临时生成目录：所有服务端都被加入一个 `KILL_ON_JOB_CLOSE` 作业对象，即使主进程崩溃或被强制结束，Windows 也会连带终止它们，不会留下继续吃内存的孤儿进程。
+
+## 意外中断保护
+
+“中断就等于白跑”已经被去掉，代价是每个世界多一次本地复制（小世界约 10 MB）：
+
+- 每个世界通过硬条件后立刻从 `_work` 临时目录复制到会话的 `winners/staging/`，然后才写日志。崩溃最多损失正在生成的那一个世界。
+- 每次尝试的结果都会追加写入 `session.journal.jsonl` 并强制刷盘；开始生成前也会先记一条“进行中”，所以中断后能知道哪些临时目录和服务端需要清理。
+- `session.state.json` 记录会话是否正常结束。仍然写着 `Running` 的会话就是被中断的。
+- 结束时会话状态、排名和报告照常写入；恢复会话时只重算最终入围世界的完整报告，排名沿用日志里的分数。
 
 ## 快速开始
 
@@ -81,13 +104,15 @@ TerrariaSeedRoller.exe --smoke-test
 
 ```powershell
 TerrariaSeedRoller.Cli.exe init roller.json
-TerrariaSeedRoller.Cli.exe roll --config roller.json
+TerrariaSeedRoller.Cli.exe roll --config roller.json [--resume | --fresh]
 TerrariaSeedRoller.Cli.exe analyze "D:\Worlds\MyWorld.wld" --profile 安全整洁 --output report
+TerrariaSeedRoller.Cli.exe sessions --output "D:\Terraria-Rolls"
+TerrariaSeedRoller.Cli.exe recover --config roller.json
 TerrariaSeedRoller.Cli.exe presets
 TerrariaSeedRoller.Cli.exe metrics
 ```
 
-按 `Ctrl+C` 会取消任务。程序只会终止它自己刚刚启动且持有 PID 的服务端子进程，不会枚举或关闭用户正在玩的 Terraria。
+按 `Ctrl+C` 会取消任务，取消同样会保留已完成的结果并允许稍后继续。程序只会终止它自己刚刚启动且持有 PID 的服务端子进程，不会枚举或关闭用户正在玩的 Terraria。
 
 配置文件由 `init` 生成。主要字段：
 
@@ -108,7 +133,12 @@ TerrariaSeedRoller.Cli.exe metrics
     "PerWorldTimeout": "00:10:00",
     "KeepRejectedWorlds": false,
     "TopResultsToTrack": 50,
-    "MinimumFreeDiskGb": 2
+    "MinimumFreeDiskGb": 2,
+    "MinimumFreeMemoryMb": 1536,
+    "ReservedLogicalProcessors": 1,
+    "ServerMemoryLimitMb": 3072,
+    "ServerStallTimeout": "00:03:00",
+    "ProtectProcessPriority": true
   },
   "Profile": {
     "Name": "自定义",
@@ -135,8 +165,11 @@ TerrariaSeedRoller.Cli.exe metrics
 
 ```text
 roll_20260909_200045_安全整洁/
-├─ session.json
-├─ failures.log                 # 仅在有失败时出现
+├─ session.json                  # 最终排名与会话摘要
+├─ session.state.json            # 会话状态；仍是 Running 表示被中断
+├─ session.journal.jsonl         # 逐次尝试日志，恢复会话时读取
+├─ crash.log                     # 仅在进程异常终止时出现
+├─ failures.log                  # 仅在有失败时出现
 └─ winners/
    ├─ 01_seed_..._score_....wld
    └─ 01_seed_..._score_.../
@@ -144,6 +177,21 @@ roll_20260909_200045_安全整洁/
       ├─ report.html
       └─ overview.svg
 ```
+
+被中断的会话不会静默消失：
+
+```powershell
+# 列出输出目录里所有可继续的会话
+TerrariaSeedRoller.Cli.exe sessions --output "D:\Terraria-Rolls"
+
+# 继续最近一个被中断的会话（跳过已经完成的世界，只补跑剩下的）
+TerrariaSeedRoller.Cli.exe roll --config roller.json --resume
+
+# 不生成任何新世界，直接导出中断会话里已经完成的世界和报告
+TerrariaSeedRoller.Cli.exe recover --config roller.json
+```
+
+不加 `--resume` 时 `roll` 会开始一个新会话，并在日志里提示还有哪个旧会话可以继续。`--fresh` 用于在存在中断会话时明确要求开始新会话。继续会话前会核对世界参数，参数不一致会直接拒绝，避免把不同规则的世界混在一起排名。
 
 默认情况下，未通过硬条件以及跌出前 N 名的临时世界会立即删除；勾选“保留未通过世界”后才会保留到 `rejected`。程序删除前会验证目标一定在当前输出目录的 `_work` 子目录内。
 
@@ -162,6 +210,8 @@ roll_20260909_200045_安全整洁/
 - 不读取 `.plr` 或 `.map`，不改变云存档、Steam Workshop 或游戏安装。
 - 候选世界写入用户指定的项目输出目录，不进入真实 Worlds 目录。
 - 服务端使用隐藏子进程、重定向输入输出、`port=0` 和 `upnp=0`。
+- 每个服务端都被加入一个 `KILL_ON_JOB_CLOSE` Windows 作业对象，主进程结束（包括崩溃或被强制结束）时由系统连带终止，不会留下孤儿服务端。
+- 工具只终止自己启动的服务端；中断遗留的进程通过输出目录下的 `server-pids.txt` 识别，正常结束时该文件会被清空。
 - Windows 原版服务端强制控制台输入为 UTF-16LE；生成完成后程序发送原始 UTF-16LE `exit-nosave`，这是端到端测试覆盖的退出路径。
 
 ## 从源码构建

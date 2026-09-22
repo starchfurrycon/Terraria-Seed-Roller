@@ -30,6 +30,8 @@ internal static class Cli
                 "analyze" => Analyze(args[1..]),
                 "roll" => await RollAsync(args[1..]),
                 "init" => Init(args[1..]),
+                "sessions" => Sessions(args[1..]),
+                "recover" => await RecoverAsync(args[1..]),
                 "presets" => Presets(),
                 "metrics" => Metrics(),
                 _ => Unknown(args[0])
@@ -78,12 +80,20 @@ internal static class Cli
             Console.WriteLine($"[{p.Completed}/{p.MaximumAttempts}] seed={p.CurrentSeed} {p.Stage}" +
                 (p.LatestScore.HasValue ? $" score={p.LatestScore:0.##}" : string.Empty) +
                 (string.IsNullOrWhiteSpace(p.Message) ? string.Empty : $" - {p.Message}")));
+        bool resume = args.Any(a => string.Equals(a, "--resume", StringComparison.OrdinalIgnoreCase));
+        bool fresh = args.Any(a => string.Equals(a, "--fresh", StringComparison.OrdinalIgnoreCase));
+        if (resume && fresh) throw new ArgumentException("--resume 与 --fresh 不能同时使用。");
         Console.WriteLine($"预设: {configuration.Profile.Name}");
         Console.WriteLine("按 Ctrl+C 可安全取消；只会终止本工具启动的 TerrariaServer。");
+        Console.WriteLine("每个世界分析完成后立即落盘，中断的会话可用 roll --resume 继续。");
         RollSessionResult session = await new SeedRollerEngine().RunAsync(configuration.Generation,
-            configuration.Profile, progress: progress, log: Console.WriteLine,
-            cancellationToken: cancellation.Token);
+            configuration.Profile, pause: null, progress: progress, log: Console.WriteLine,
+            cancellationToken: cancellation.Token,
+            options: new RollRunOptions { Resume = resume, Fresh = fresh });
+        if (session.Resumed)
+            Console.WriteLine("本次运行继续了上一次被中断的会话。");
         Console.WriteLine($"完成: 尝试 {session.Attempted}，成功分析 {session.Completed - session.Failed}，失败 {session.Failed}。");
+        if (session.ResourceSummary is not null) Console.WriteLine(session.ResourceSummary);
         Console.WriteLine($"保留 {session.Winners.Count} 个入选世界: {session.OutputDirectory}");
         foreach ((RollResult winner, int index) in session.Winners.Select((value, index) => (value, index)))
             Console.WriteLine($"#{index + 1} {winner.CopiedSeed}  score={winner.Analysis.Evaluation!.Score:0.##}  " +
@@ -110,7 +120,12 @@ internal static class Cli
                 MaximumAttempts = 20,
                 WinnersToKeep = 3,
                 Parallelism = 1,
-                PerWorldTimeout = TimeSpan.FromMinutes(10)
+                PerWorldTimeout = TimeSpan.FromMinutes(10),
+                MinimumFreeMemoryMb = 1536,
+                ReservedLogicalProcessors = 1,
+                ServerMemoryLimitMb = 3072,
+                ServerStallTimeout = TimeSpan.FromMinutes(3),
+                ProtectProcessPriority = true
             },
             Profile = BuiltInProfiles.SafeAndTidy()
         };
@@ -139,6 +154,65 @@ internal static class Cli
         return 0;
     }
 
+    private static string ResolveOutput(string[] args)
+    {
+        string? configured = Option(args, "--output");
+        if (configured is not null) return Path.GetFullPath(configured);
+        string configPath = Option(args, "--config") ?? "roller.json";
+        if (File.Exists(configPath))
+        {
+            try
+            {
+                RollConfiguration configuration = JsonSerializer.Deserialize<RollConfiguration>(
+                    File.ReadAllText(configPath), JsonOptions)!;
+                return Path.GetFullPath(configuration.Generation.CandidateDirectory);
+            }
+            catch (JsonException) { }
+            catch (IOException) { }
+        }
+        return Path.GetFullPath(Environment.CurrentDirectory);
+    }
+
+    private static int Sessions(string[] args)
+    {
+        string output = ResolveOutput(args);
+        IReadOnlyList<InterruptedRoll> rolls = RollRecovery.Find(output);
+        if (rolls.Count == 0)
+        {
+            Console.WriteLine($"{output} 下没有被中断的 Roll 种会话。");
+            return 0;
+        }
+        Console.WriteLine($"{output} 下有 {rolls.Count} 个可继续的会话：");
+        foreach (InterruptedRoll roll in rolls) Console.WriteLine($"  {roll.Describe()}");
+        Console.WriteLine("使用 roll --resume 继续最近一个，或 recover 直接导出已完成的世界。");
+        return 0;
+    }
+
+    private static async Task<int> RecoverAsync(string[] args)
+    {
+        string configPath = Path.GetFullPath(Option(args, "--config") ??
+            (args.Length > 0 && !args[0].StartsWith('-') ? args[0] : "roller.json"));
+        RollConfiguration configuration = JsonSerializer.Deserialize<RollConfiguration>(
+            await File.ReadAllTextAsync(configPath), JsonOptions) ??
+            throw new InvalidDataException("配置文件为空或无效。");
+        string output = ResolveOutput(args);
+        InterruptedRoll? roll = RollRecovery.FindLatest(output);
+        if (roll is null)
+        {
+            Console.WriteLine($"{output} 下没有被中断的 Roll 种会话。");
+            return 0;
+        }
+        RollRecovery.EnsureCompatible(roll, configuration.Generation);
+        Console.WriteLine($"恢复会话: {roll.Describe()}");
+        IReadOnlyList<RollResult> recovered = RollRecovery.ExportSurvivors(roll,
+            configuration.Profile, log: Console.WriteLine);
+        Console.WriteLine($"已导出 {recovered.Count} 个已完成的世界。");
+        foreach ((RollResult result, int index) in recovered.Select((value, index) => (value, index)))
+            Console.WriteLine($"#{index + 1} {result.CopiedSeed}  score={result.Analysis.Evaluation?.Score ?? 0:0.##}");
+        Console.WriteLine($"目录: {Path.Combine(roll.SessionDirectory, "recovered")}");
+        return recovered.Count == 0 ? 2 : 0;
+    }
+
     private static string? Option(string[] args, string name)
     {
         int index = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
@@ -161,9 +235,16 @@ Terraria Seed Roller CLI
 
   analyze <world.wld> [--profile 安全整洁] [--output folder]
   init [roller.json] [--force]
-  roll --config roller.json
+  roll --config roller.json [--resume | --fresh]
+  sessions [--output folder]
+  recover --config roller.json [--output folder]
   presets
   metrics
+
+被中断的 Roll 种会在输出目录留下可继续的会话：
+  roll --config roller.json --resume   继续最近一个被中断的会话
+  roll --config roller.json --fresh    忽略中断会话，开始新会话
+  recover --config roller.json         不生成新世界，直接导出中断会话里已完成的世界
 
 退出码: 0 成功/通过，2 分析成功但未通过硬条件或无入选，130 已取消。
 """);
